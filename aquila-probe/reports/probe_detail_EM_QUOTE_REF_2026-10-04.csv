@@ -1,0 +1,4 @@
+round,ts_epoch_ms,code,http,ban,success,field_complete,latency_ms,reason
+1,1791075249685,600519,-1,false,false,false,317,IOException: HTTP/1.1 header parser received no bytes
+1,1791075249871,000001,-1,false,false,false,185,IOException: HTTP/1.1 header parser received no bytes
+1,1791075250077,300750,-1,false,false,false,207,IOException: HTTP/1.1 header parser received no bytes
