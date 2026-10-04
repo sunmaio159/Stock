@@ -1,0 +1,7 @@
+# 仅本地开发/联调使用（--spring.profiles.active=dev）。
+# F-SEC-01 部分满足：生产密钥已强制 env 注入（application.yml 空默认 + 构造期 fail-fast）；
+# 但下面这把开发密钥仍在代码库。缓解=profile 隔离 + 仅 dev 生效；彻底合规待决定：
+# 改为从已 .gitignore 的本地 .env 读取（届时删除本行）。生产环境禁止依赖本文件。
+aquila:
+  security:
+    jwt-secret: dev_only_secret_key_do_not_use_in_prod_0123456789abcdef

@@ -1,0 +1,63 @@
+# ============================================================
+# Aquila V1 W0 本地开发环境（一键起）
+# 依据：落地文档设计/06_实施计划与验收.md §W0（MySQL8 / Redis7）
+# 用法：docker compose up -d    （首次启动后，后端 Flyway 自动建 31 表）
+# 说明：本机若已有 3306/6379 占用，可改 HOST_PORT 变量。
+#
+# 凭证说明（F-SEC-01 同类风险，口径同 application-dev.yml：部分满足，非已解除）
+#   - 生产严禁依赖本文件，必须用环境变量覆盖：MYSQL_ROOT_PASSWORD / MYSQL_PASSWORD。
+#   - 三个凭证变量名与 application.yml 的占位符同名，docker compose 与 Spring 应用各自独立读取：
+#     docker compose 读项目根的 .env（或 shell export）；单独 `mvn spring-boot:run` 起的应用
+#     读的是**应用进程环境**。因此改密码时必须同时 export 到应用进程，例如：
+#       export MYSQL_ROOT_PASSWORD=x MYSQL_PASSWORD=x && docker compose up -d
+#       export MYSQL_PASSWORD=x && mvn spring-boot:run -Dspring-boot.run.profiles=dev
+#     只写 .env 而不起 export → DB 容器用新密码、应用回退默认值 → 连接失败。
+#   - mysql.healthcheck 的 -proot 与 MYSQL_ROOT_PASSWORD 联动，覆盖后 healthcheck 才仍可用。
+# ============================================================
+services:
+  mysql:
+    image: mysql:8.0.36
+    container_name: aquila-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: aquila
+      MYSQL_USER: ${MYSQL_USER:-aquila}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-aquila}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+      - --default-time-zone=+08:00
+      - --sql-mode=STRICT_TRANS_TABLES
+    ports:
+      - "${MYSQL_HOST_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-root}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: aquila-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mysql-data:
+  redis-data:

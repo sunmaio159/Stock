@@ -1,0 +1,26 @@
+{
+  "name": "aquila-web",
+  "private": true,
+  "version": "2.1.1",
+  "type": "module",
+  "description": "Aquila 投研工具 V1 前端（Vue3 + TS + Vite + Element Plus + ECharts + Pinia）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "type-check": "vue-tsc --noEmit",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "element-plus": "^2.7.0",
+    "echarts": "^5.5.0",
+    "pinia": "^2.1.7",
+    "vue": "^3.4.21",
+    "vue-router": "^4.3.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.0.4",
+    "typescript": "^5.4.0",
+    "vite": "^5.2.0",
+    "vue-tsc": "^2.0.6"
+  }
+}

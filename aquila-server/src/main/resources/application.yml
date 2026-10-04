@@ -1,0 +1,105 @@
+server:
+  port: 8080
+  timezone: Asia/Shanghai
+  servlet:
+    context-path: /
+
+spring:
+  application:
+    name: aquila-server
+  jackson:
+    time-zone: Asia/Shanghai
+    date-format: "yyyy-MM-dd'T'HH:mm:ssXXX"
+    default-property-inclusion: non_null
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/aquila?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&characterEncoding=utf8
+    username: ${MYSQL_USER:aquila}
+    password: ${MYSQL_PASSWORD:aquila}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      database: 0
+      timeout: 3000ms
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 2
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: classpath:db/migration
+    encoding: UTF-8
+    # 分区维护过程含 DELIMITER 语义，交由迁移脚本内的普通 SQL 表达（见 V2）
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      id-type: auto
+      logic-not-delete-value: 0
+      logic-delete-value: 1
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+
+# ============================================================
+# Aquila 业务配置基线（源：落地文档设计/04_实现方案.md §7）
+# 违反核心口径即返工（见 00_README §核心口径）
+# ============================================================
+aquila:
+  timezone: Asia/Shanghai
+  security:
+    # JWT（W0.3 骨架）；F-SEC-01：默认不提供兜底值，必须由环境变量注入。
+    # 未设 AQUILA_JWT_SECRET 时为空 → JwtTokenProvider 构造期抛异常 fail-fast，避免生产带默认密钥启动。
+    # 本地开发：启用 dev profile（application-dev.yml 带开发密钥）或自行 set 环境变量。
+    jwt-secret: ${AQUILA_JWT_SECRET:}
+    access-token-ttl-seconds: 7200      # AT 2h
+    refresh-token-ttl-seconds: 604800   # RT 7d
+  crawl:
+    exec-pool: 8
+    exec-queue: 64
+    retry: [1000, 2000, 4000]
+    scan-interval-seconds: 30
+  circuit:
+    fail-threshold: 5
+    backoff-s: [30, 120, 600, 1800]
+  govern:
+    queue: 10000
+    offer-timeout-ms: 3000
+    simhash-band: 4          # P0-03 分段 LSH
+    simhash-hamming: 3
+    simhash-window-h: 24
+  sentiment:
+    pos: 0.15
+    neg: -0.15
+    daily-cron: "0 0 17 * * ?"
+    title-weight: 0.6        # 标题分权默认 0.6（V2.1.1）
+    negation-window: 3
+    transition-factor: 1.5
+  alert:
+    eval-interval-s: 30
+    cooldown-s: 900
+    max-per-day: 10
+    # V1 指标白名单（D-1：volume_ratio 已移除，不实现不预留）
+    metric-whitelist: [price, sentiment_index, post_ratio]
+
+logging:
+  pattern:
+    # traceId 纳入日志（W0.3）
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [traceId=%X{traceId:-}] %logger{36} - %msg%n"
