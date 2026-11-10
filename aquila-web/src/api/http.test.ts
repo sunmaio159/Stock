@@ -42,4 +42,29 @@ describe('request', () => {
 
     await expect(request('/api/health')).rejects.toThrow('Malformed API response');
   });
+
+  it('fetches a CSRF token and attaches it to same-origin write requests', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        code: 0,
+        message: 'OK',
+        data: { token: 'csrf-token' },
+        traceId: 'csrf-trace',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        code: 0,
+        message: 'OK',
+        data: { authenticated: true },
+        traceId: 'login-trace',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await request('/api/auth/login', { method: 'POST', body: '{}' });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/auth/csrf');
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/auth/login');
+    const loginOptions = fetchMock.mock.calls[1]?.[1] as RequestInit;
+    expect(loginOptions.credentials).toBe('same-origin');
+    expect(new Headers(loginOptions.headers).get('X-CSRF-Token')).toBe('csrf-token');
+  });
 });

@@ -5,11 +5,15 @@ spring:
   application:
     name: aquila-server
   flyway:
-    enabled: false
+    enabled: ${STOCK_FLYWAY_ENABLED:false}
 
 aquila:
   database:
+    enabled: ${STOCK_DB_ENABLED:false}
     schema: ${STOCK_DB_SCHEMA:stock_greenfield_20261109}
     url: ${STOCK_DB_URL:}
     username: ${STOCK_DB_USER:}
     password: ${STOCK_DB_PASSWORD:}
+  security:
+    allowed-origin: ${STOCK_ALLOWED_ORIGIN:}
+    totp-encryption-key: ${STOCK_TOTP_ENCRYPTION_KEY:}

@@ -18,7 +18,280 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthResult'
+  /api/auth/csrf:
+    get:
+      operationId: getAuthCsrf
+      summary: Create an anonymous or session-bound CSRF context
+      security: []
+      responses:
+        '200':
+          description: A short-lived CSRF token is returned; the context cookie is HttpOnly.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CsrfResult'
+  /api/auth/bootstrap/context:
+    post:
+      operationId: startBootstrapContext
+      summary: Exchange a one-time local bootstrap token for a restricted context
+      security:
+        - csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BootstrapTokenRequest'
+      responses:
+        '200':
+          description: Restricted bootstrap cookie was set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BooleanResult'
+        '401':
+          description: The bootstrap token is invalid, consumed, or expired.
+  /api/auth/bootstrap/confirm:
+    post:
+      operationId: confirmBootstrap
+      summary: Confirm the authenticator and activate the administrator
+      security:
+        - csrfToken: []
+          bootstrapCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CodeRequest'
+      responses:
+        '200':
+          description: Persistent session cookie and one-time recovery codes were issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResult'
+        '401':
+          description: Bootstrap context or authenticator code is invalid.
+  /api/auth/login:
+    post:
+      operationId: login
+      summary: Authenticate with password and a single-use TOTP step
+      security:
+        - csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Session cookie was set; the session token is not returned in JSON.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResult'
+        '401':
+          description: Credentials are invalid.
+        '429':
+          description: Ten failures occurred within the rolling five-minute window.
+  /api/auth/recovery-login:
+    post:
+      operationId: recoveryLogin
+      summary: Create a restricted recovery context using password and a one-time code
+      security:
+        - csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecoveryLoginRequest'
+      responses:
+        '200':
+          description: Short-lived recovery cookie was set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResult'
+        '401':
+          description: Credentials or recovery code are invalid.
+        '429':
+          description: Ten failures occurred within the rolling five-minute window.
+  /api/auth/recovery/rebind/start:
+    post:
+      operationId: startRecoveryRebind
+      summary: Create a new authenticator secret in a recovery-only context
+      security:
+        - csrfToken: []
+          recoveryCookie: []
+      responses:
+        '200':
+          description: The new secret and URI are returned for one-time setup.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TotpSetupResult'
+        '403':
+          description: The session is not a recovery context.
+  /api/auth/recovery/rebind/confirm:
+    post:
+      operationId: confirmRecoveryRebind
+      summary: Confirm the new authenticator, revoke old recovery material, and require login
+      security:
+        - csrfToken: []
+          recoveryCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CodeRequest'
+      responses:
+        '200':
+          description: New one-time recovery codes were returned and re-login is required.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecoveryCodesResult'
+        '401':
+          description: Recovery context or authenticator code is invalid.
+  /api/auth/logout:
+    post:
+      operationId: logout
+      summary: Revoke the current session and clear authentication cookies
+      security:
+        - csrfToken: []
+          sessionCookie: []
+        - csrfToken: []
+          recoveryCookie: []
+      responses:
+        '200':
+          description: Current context was revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BooleanResult'
+  /api/auth/session:
+    get:
+      operationId: getAuthSession
+      summary: Resolve the current session from its HttpOnly cookie
+      security:
+        - sessionCookie: []
+        - recoveryCookie: []
+      responses:
+        '200':
+          description: Current authentication context.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResult'
+        '401':
+          description: No active session exists.
+  /api/auth/reauth:
+    post:
+      operationId: reauthenticate
+      summary: Establish a short-lived context for a sensitive operation
+      security:
+        - csrfToken: []
+          sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReauthRequest'
+      responses:
+        '200':
+          description: HttpOnly reauthentication cookie was set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReauthResult'
+        '401':
+          description: Password or TOTP code is invalid.
+        '429':
+          description: Ten failures occurred within the rolling five-minute window.
+  /api/auth/totp/setup:
+    post:
+      operationId: startTotpSetup
+      summary: Start authenticator replacement after reauthentication
+      security:
+        - csrfToken: []
+          sessionCookie: []
+          reauthCookie: []
+      responses:
+        '200':
+          description: Authenticator setup secret and URI.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TotpSetupResult'
+        '403':
+          description: Recent reauthentication is missing or expired.
+  /api/auth/totp/confirm:
+    post:
+      operationId: confirmTotpSetup
+      summary: Confirm a replacement authenticator and rotate recovery codes
+      security:
+        - csrfToken: []
+          sessionCookie: []
+          reauthCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CodeRequest'
+      responses:
+        '200':
+          description: New one-time recovery codes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecoveryCodesResult'
+        '403':
+          description: Recent reauthentication is missing or expired.
+  /api/auth/recovery-codes/rotate:
+    post:
+      operationId: rotateRecoveryCodes
+      summary: Revoke the previous recovery batch and issue a new batch
+      security:
+        - csrfToken: []
+          sessionCookie: []
+          reauthCookie: []
+      responses:
+        '200':
+          description: New one-time recovery codes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecoveryCodesResult'
+        '403':
+          description: Recent reauthentication is missing or expired.
 components:
+  securitySchemes:
+    csrfToken:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: AQUILA_SESSION
+    recoveryCookie:
+      type: apiKey
+      in: cookie
+      name: AQUILA_RECOVERY
+    bootstrapCookie:
+      type: apiKey
+      in: cookie
+      name: AQUILA_BOOTSTRAP
+    reauthCookie:
+      type: apiKey
+      in: cookie
+      name: AQUILA_REAUTH
   schemas:
     HealthResult:
       type: object
@@ -45,3 +318,159 @@ components:
         traceId:
           type: string
           format: uuid
+    AuthEnvelope:
+      type: object
+      required: [code, message, data, traceId]
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+        data:
+          type: object
+          additionalProperties: true
+        traceId:
+          type: string
+          format: uuid
+    CsrfResult:
+      allOf:
+        - $ref: '#/components/schemas/AuthEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  writeOnly: true
+    BooleanResult:
+      allOf:
+        - $ref: '#/components/schemas/AuthEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties:
+                type: boolean
+    AuthResult:
+      allOf:
+        - $ref: '#/components/schemas/AuthEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [authenticated, username, purpose, recoveryCodes]
+              properties:
+                authenticated:
+                  type: boolean
+                username:
+                  type: string
+                purpose:
+                  type: string
+                  enum: [ADMIN, RECOVERY]
+                recoveryCodes:
+                  type: array
+                  items:
+                    type: string
+                    writeOnly: true
+    TotpSetupResult:
+      allOf:
+        - $ref: '#/components/schemas/AuthEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [secret, otpauthUri]
+              properties:
+                secret:
+                  type: string
+                  writeOnly: true
+                otpauthUri:
+                  type: string
+                  format: uri
+                  writeOnly: true
+    RecoveryCodesResult:
+      allOf:
+        - $ref: '#/components/schemas/AuthEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [codes, shownOnce, requiresLogin]
+              properties:
+                codes:
+                  type: array
+                  items:
+                    type: string
+                    writeOnly: true
+                shownOnce:
+                  type: boolean
+                  const: true
+                requiresLogin:
+                  type: boolean
+    ReauthResult:
+      allOf:
+        - $ref: '#/components/schemas/AuthEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [expiresAt]
+              properties:
+                expiresAt:
+                  type: string
+                  format: date-time
+    BootstrapTokenRequest:
+      type: object
+      required: [bootstrapToken]
+      properties:
+        bootstrapToken:
+          type: string
+          minLength: 32
+          writeOnly: true
+    LoginRequest:
+      type: object
+      required: [username, password, totpCode]
+      properties:
+        username:
+          type: string
+          minLength: 1
+          maxLength: 80
+        password:
+          type: string
+          writeOnly: true
+        totpCode:
+          type: string
+          pattern: '^[0-9]{6}$'
+          writeOnly: true
+    RecoveryLoginRequest:
+      type: object
+      required: [username, password, recoveryCode]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          writeOnly: true
+        recoveryCode:
+          type: string
+          writeOnly: true
+    ReauthRequest:
+      type: object
+      required: [password, totpCode]
+      properties:
+        password:
+          type: string
+          writeOnly: true
+        totpCode:
+          type: string
+          pattern: '^[0-9]{6}$'
+          writeOnly: true
+    CodeRequest:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+          writeOnly: true

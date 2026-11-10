@@ -14,12 +14,16 @@ data category, not an invented number of days.
 
 | Logical object | Ownership and key constraints to preserve | References / relationship | Retention class | Owning migration |
 |---|---|---|---|---|
-| `sys_user` | B owns the single-admin identity; username unique; password hash and TOTP secret are never plaintext | None | Identity and security lifecycle | V1 — B |
-| `sys_user_session` | Unique `token_hash`; purpose and revocation are explicit | `sys_user` | Revocable session lifecycle | V1 — B |
-| Recovery-code batch and code | B freezes physical names; codes are single-use and record batch, used, and revoked state | `sys_user`, recovery-code batch | Authentication recovery lifecycle | V1 — B |
-| Bootstrap and reauthentication context | B freezes physical names and purpose-specific expiry/consumption rules; store only credential hashes | `sys_user` when bound | Short-lived security context | V1 — B |
-| `sys_idempotency_record` | B owns request idempotency; key scope and uniqueness are frozen with the API operation | Owning operation / administrator | Idempotency lifecycle | V1 — B |
-| `sys_audit_log` | Append-oriented audit facts; sensitive credentials and source content are excluded | Actor references `sys_user` where applicable | Security and operational audit | V1 — B |
+| `sys_user` | Single-admin singleton key; username unique; password hash and AES-GCM-encrypted TOTP secret are never plaintext; last consumed TOTP step prevents replay | None | Identity and security lifecycle | V1 — B |
+| `sys_user_session` | Unique `token_hash`; purpose, creation, and revocation are explicit; ADMIN sessions have no server expiry; recovery context expires | `sys_user` | Revocable session lifecycle | V1 — B |
+| `sys_recovery_code_batch` | Each batch is independently revocable and tied to one administrator | `sys_user` | Authentication recovery lifecycle | V1 — B |
+| `sys_recovery_code` | Unique SHA-256 hash only; one-time `used_at` and revocation are atomic | `sys_recovery_code_batch` | Authentication recovery lifecycle | V1 — B |
+| `sys_bootstrap_context` | Unique bootstrap-token hash; short expiry and atomic consumption | `sys_user` | Short-lived bootstrap context | V1 — B |
+| `sys_reauth_context` | Unique reauthentication-token hash; bound to user and session; short expiry and atomic consumption | `sys_user`, `sys_user_session` | Short-lived sensitive-action context | V1 — B |
+| `sys_csrf_context` | Context and CSRF token hashes only; short expiry; optionally bound to a live session | `sys_user_session` | CSRF lifecycle | V1 — B |
+| `sys_login_failure` | Persistent per-administrator failed-attempt timestamps support the rolling five-minute limit | `sys_user` | Authentication rate-limit state | V1 — B |
+| `sys_idempotency_record` | B owns request idempotency; key scope and uniqueness are frozen with the API operation | Owning operation / administrator | Idempotency lifecycle | V2 — B |
+| `sys_audit_log` | Append-oriented security facts; credentials, tokens, recovery codes, and source content are excluded | Actor references `sys_user` where applicable | Security and operational audit | V1 — B |
 | `m1_watchlist_group` | User-owned groups; ordering is versioned | `sys_user` | User configuration | V2 — B |
 | `m1_watchlist_item` | User/security membership and ordering are explicit; exact uniqueness is frozen in B | `m1_watchlist_group`, `m2_security`, `sys_user` | User configuration | V2 — B |
 | `m1_watchlist_preference` | One effective preference per agreed user/security scope; B freezes the key | `sys_user`, `m2_security` | User configuration | V2 — B |

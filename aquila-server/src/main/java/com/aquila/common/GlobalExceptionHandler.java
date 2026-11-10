@@ -1,5 +1,6 @@
 package com.aquila.common;
 
+import com.aquila.auth.AuthException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -9,6 +10,18 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+    @ExceptionHandler(AuthException.class)
+    public ResponseEntity<Result<Void>> handleAuthentication(
+            AuthException exception,
+            HttpServletRequest request) {
+        Object traceId = request.getAttribute(TraceIdFilter.TRACE_ID_ATTRIBUTE);
+        return ResponseEntity.status(exception.status())
+                .body(Result.error(
+                        exception.code(),
+                        exception.getMessage(),
+                        traceId == null ? null : traceId.toString()));
+    }
+
     @ExceptionHandler(NoResourceFoundException.class)
     public ResponseEntity<Result<Void>> handleNotFound(
             NoResourceFoundException exception,

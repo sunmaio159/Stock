@@ -13,15 +13,35 @@ export async function request<T>(
     throw new Error('API path must be same-origin');
   }
 
+  const headers = new Headers(init.headers);
+  headers.set('Accept', 'application/json');
+  if (isWriteMethod(init.method) && path !== '/api/auth/csrf') {
+    headers.set('X-CSRF-Token', await fetchCsrfToken());
+  }
+
   const response = await fetch(path, {
     ...init,
     credentials: 'same-origin',
-    headers: {
-      Accept: 'application/json',
-      ...init.headers,
-    },
+    headers,
   });
 
+  return readResult<T>(response);
+}
+
+async function fetchCsrfToken(): Promise<string> {
+  const response = await fetch('/api/auth/csrf', {
+    credentials: 'same-origin',
+    cache: 'no-store',
+    headers: { Accept: 'application/json' },
+  });
+  const result = await readResult<{ token: string }>(response);
+  if (!result.data || typeof result.data.token !== 'string' || result.data.token.length === 0) {
+    throw new Error('Malformed CSRF response');
+  }
+  return result.data.token;
+}
+
+async function readResult<T>(response: Response): Promise<Result<T>> {
   let payload: unknown;
   try {
     payload = await response.json();
@@ -36,6 +56,10 @@ export async function request<T>(
     throw new Error(payload.message || `HTTP ${response.status}`);
   }
   return payload;
+}
+
+function isWriteMethod(method?: string): boolean {
+  return ['POST', 'PUT', 'PATCH', 'DELETE'].includes((method ?? 'GET').toUpperCase());
 }
 
 function isResult<T>(value: unknown): value is Result<T> {
