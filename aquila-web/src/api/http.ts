@@ -1,54 +1,50 @@
-// 统一响应封装的 TS 类型（对齐 03 §三 {code, message, data, traceId}）
 export interface Result<T> {
-  code: number
-  message: string
-  data?: T
-  traceId?: string
+  code: number;
+  message: string;
+  data: T | null;
+  traceId: string;
 }
 
-// 关键错误码（对齐后端 ErrorCode，仅前端需感知的子集）
-export const BizCode = {
-  SUCCESS: 0,
-  RATE_LIMITED: 1004,
-  UNAUTHORIZED: 2001,
-  TOKEN_EXPIRED: 2002,
-  DIMENSION_NOT_OPEN: 3007,
-  SCORE_NOT_OPEN: 3008
-} as const
-
-const TOKEN_KEY = 'aquila_at'
-
-export function setAccessToken(token: string) {
-  localStorage.setItem(TOKEN_KEY, token)
-}
-export function getAccessToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY)
-}
-export function clearAccessToken() {
-  localStorage.removeItem(TOKEN_KEY)
-}
-
-/** 统一 fetch 封装：注入 Bearer，解包 Result，非 0 code 抛业务错误。 */
-export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers)
-  const token = getAccessToken()
-  if (token) headers.set('Authorization', `Bearer ${token}`)
-  headers.set('Content-Type', 'application/json')
-
-  const resp = await fetch(path, { ...init, headers })
-  // HTTP 恒 200（限流 429 除外），业务状态看 code
-  const body = (await resp.json()) as Result<T>
-
-  if (body.code === BizCode.UNAUTHORIZED || body.code === BizCode.TOKEN_EXPIRED) {
-    clearAccessToken()
-    throw new Error(`认证失效: ${body.message} (trace=${body.traceId ?? '-'})`)
+export async function request<T>(
+  path: string,
+  init: RequestInit = {},
+): Promise<Result<T>> {
+  if (!path.startsWith('/api/') || path.startsWith('//')) {
+    throw new Error('API path must be same-origin');
   }
-  if (body.code !== BizCode.SUCCESS) {
-    throw new Error(`业务错误[${body.code}]: ${body.message} (trace=${body.traceId ?? '-'})`)
+
+  const response = await fetch(path, {
+    ...init,
+    credentials: 'same-origin',
+    headers: {
+      Accept: 'application/json',
+      ...init.headers,
+    },
+  });
+
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error('Malformed API response');
   }
-  return body.data as T
+
+  if (!isResult<T>(payload)) {
+    throw new Error('Malformed API response');
+  }
+  if (!response.ok) {
+    throw new Error(payload.message || `HTTP ${response.status}`);
+  }
+  return payload;
 }
 
-export const api = {
-  ping: () => request<Record<string, unknown>>('/api/ping')
+function isResult<T>(value: unknown): value is Result<T> {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const result = value as Record<string, unknown>;
+  return typeof result.code === 'number'
+    && typeof result.message === 'string'
+    && Object.hasOwn(result, 'data')
+    && typeof result.traceId === 'string';
 }

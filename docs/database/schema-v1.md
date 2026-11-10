@@ -1,0 +1,61 @@
+# Schema v1 logical model and ownership map
+
+This is a logical model and migration-ownership map only. It contains no DDL,
+placeholder tables, or physical column definitions. The A-stage map follows
+the target objects and invariants in the unified plan §7.1–7.2; B–F own the
+physical schema, field/nullability choices, indexes, retention durations, and
+versioned migrations. A row is not permission to create a table before its
+owning stage.
+
+The names below are logical object names where §7.1 names them explicitly.
+Where it describes an object by purpose instead, the owning stage freezes its
+physical name before creating its migration. Retention classes describe the
+data category, not an invented number of days.
+
+| Logical object | Ownership and key constraints to preserve | References / relationship | Retention class | Owning migration |
+|---|---|---|---|---|
+| `sys_user` | B owns the single-admin identity; username unique; password hash and TOTP secret are never plaintext | None | Identity and security lifecycle | V1 — B |
+| `sys_user_session` | Unique `token_hash`; purpose and revocation are explicit | `sys_user` | Revocable session lifecycle | V1 — B |
+| Recovery-code batch and code | B freezes physical names; codes are single-use and record batch, used, and revoked state | `sys_user`, recovery-code batch | Authentication recovery lifecycle | V1 — B |
+| Bootstrap and reauthentication context | B freezes physical names and purpose-specific expiry/consumption rules; store only credential hashes | `sys_user` when bound | Short-lived security context | V1 — B |
+| `sys_idempotency_record` | B owns request idempotency; key scope and uniqueness are frozen with the API operation | Owning operation / administrator | Idempotency lifecycle | V1 — B |
+| `sys_audit_log` | Append-oriented audit facts; sensitive credentials and source content are excluded | Actor references `sys_user` where applicable | Security and operational audit | V1 — B |
+| `m1_watchlist_group` | User-owned groups; ordering is versioned | `sys_user` | User configuration | V2 — B |
+| `m1_watchlist_item` | User/security membership and ordering are explicit; exact uniqueness is frozen in B | `m1_watchlist_group`, `m2_security`, `sys_user` | User configuration | V2 — B |
+| `m1_watchlist_preference` | One effective preference per agreed user/security scope; B freezes the key | `sys_user`, `m2_security` | User configuration | V2 — B |
+| Manual hot-list item | User plus security is unique; manual entries remain distinct from computed candidates | `sys_user`, `m2_security` | User configuration | V2 — B |
+| `m2_security` | Canonical `(exchange, code)` key; aliases do not replace the canonical key | None | Reference data | V3 — B |
+| `m2_security_alias` | Alias identity and normalization rules are frozen in B | `m2_security` | Reference data | V3 — B |
+| `m2_trade_calendar` | One canonical trading-day fact per agreed market/date key | Market/calendar scope | Reference data | V3 — B |
+| `sys_import_batch` and import rows | Batch and row-level validation outcomes are traceable and idempotent; B freezes row key | `sys_user`; rows belong to a batch and may reference `m2_security` | Import evidence | V3 — B |
+| `m3_source_config` | Source permission version, validity, rate limit, cursor version, lease, and fencing token are distinct state | Source/adapter identity | Licensed-source configuration | V4 — C |
+| `m3_task_instance` | `run_key`, attempt, state, and before/after cursor are recorded; lease owner and fencing token guard commits | `m3_source_config` | Task execution lifecycle | V4 — C |
+| Collection coverage fact | Records source, subscription scope/version, business interval, cursors, run, state, adapter contract version, evidence reference, and observation time | `m3_source_config`, `m3_task_instance` | Coverage evidence | V4 — C |
+| `m3_raw_record` | Network duplicates do not create new facts; real revisions remain distinguishable. Partitioned references carry both `raw_record_id` and `fetched_date` | `m3_source_config`; referenced by jobs/revisions together with partition date | Licensed raw content | V4 — C |
+| `m4_normalized_doc` | Business key `(source_code, outer_id)`; current pointers are separate from immutable revision history | Source identity; current revision | Licensed normalized content | V5 — C |
+| `m4_doc_revision` | Immutable revision with body hash and monotonically ordered `revision_order`; processing an older revision cannot move the current pointer backwards | `m4_normalized_doc`, `m3_raw_record` plus partition date | Licensed revision content | V5 — C |
+| Document/security mention | Unique `(revision, security)`; association changes dirty affected analysis windows | `m4_doc_revision`, `m2_security` | Derived content association | V5 — C |
+| Duplicate relation and quality reason | Duplicate evidence and quality reasons are retained without overwriting the canonical source facts | `m4_normalized_doc` / revision | Derived content metadata | V5 — C |
+| `m4_processing_job` | Idempotency identity derives from input type/key, stage, processor version, and input revision; lease/fencing gates output commit | Raw record plus partition date, document/revision, or other typed input | Processing lifecycle | V6 — C |
+| Dead-letter record | Safe summary and input reference only; never duplicate sensitive source content | `m4_processing_job` and typed input reference | Processing failure evidence | V6 — C |
+| `m5_sentiment_dict` and version | Unique `(word, dict_type, dict_version)`; published snapshots are immutable | Dictionary version | Versioned derived configuration | V7 — D |
+| `m5_sentiment_result` | Unique `(doc_revision_id, engine_level, algo_version, dict_version)`; score is `DECIMAL(6,2)` in `[-100,100]`, confidence is `DECIMAL(5,4)` | `m4_doc_revision`, sentiment dictionary/version | Derived analysis | V7 — D |
+| `m5_sentiment_window` | Unique `(security_code, window_type, window_end, analysis_version, aggregation_policy_version)`; no parallel duplicate aggregate fact | `m2_security`, analysis version | Derived analysis | V7 — D |
+| Dirty-window state, input-change log, analysis-version state/pointer | Change sequence is commit-ordered and recoverable; active pointer changes only after catch-up and validation | Revisions, security associations, sentiment windows and version | Recalculation/audit state | V7 — D |
+| `m8_alert_rule` | Rule version and approved thresholds are explicit; G05 remains open until frozen | `m2_security` where scoped | Alert configuration | V8 — E |
+| Alert assessment state and silence record | Coverage and insufficient-baseline states remain distinguishable from zero alerts; silence records actor, scope, reason, and interval | Rule, security, `sys_user` | Alert operations | V8 — E |
+| `m8_alert_event` and event correction | Original evidence is immutable; late-data corrections append versioned facts | Rule/version, window, security and sample-policy snapshot | Alert evidence | V8 — E |
+| Rule/security cooldown state | Unique `(rule_id, security_code)` | `m8_alert_rule`, `m2_security` | Alert operations | V8 — E |
+| `m8_alert_delivery` | Unique `(event_id, channel)` | `m8_alert_event` | Delivery history | V8 — E |
+| `sys_maintenance_run` and revocation/deletion register | Cleanup is resumable and auditable; deletion register keeps only necessary non-content facts | Affected source/document/security and actor as applicable | Maintenance and deletion evidence | V8 — F |
+
+## Migration boundaries
+
+- V1–V3 are owned by Stage B; V4–V6 by Stage C; V7 by Stage D; V8 by Stages E–F as identified above.
+- No migration or DDL is created by Stage A. No historical DDL, database, or Flyway history is an input.
+- All business migrations target only the explicitly provisioned new schema
+  `stock_greenfield_20261109`. If it is not provisioned, MySQL acceptance is
+  pending and no database connection is attempted.
+- Exact retention durations, final physical names for purpose-only objects,
+  field definitions, indexes, and additional references remain with each
+  owning stage and its evidence-backed decisions.

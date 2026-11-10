@@ -1,0 +1,47 @@
+openapi: 3.1.0
+info:
+  title: Aquila Stock API
+  version: 0.1.0
+  description: Same-origin API contract for the greenfield Stock foundation.
+servers:
+  - url: /
+paths:
+  /api/health:
+    get:
+      operationId: getHealth
+      summary: Report API process health
+      security: []
+      responses:
+        '200':
+          description: The API process is available.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResult'
+components:
+  schemas:
+    HealthResult:
+      type: object
+      required:
+        - code
+        - message
+        - data
+        - traceId
+      properties:
+        code:
+          type: integer
+          const: 0
+        message:
+          type: string
+          const: OK
+        data:
+          type: object
+          required:
+            - status
+          properties:
+            status:
+              type: string
+              const: UP
+        traceId:
+          type: string
+          format: uuid

@@ -1,18 +1,20 @@
-# ---- build outputs ----
+# Java and Maven
 aquila-server/target/
-aquila-web/dist/
+*.class
+
+# Node and Vite
 aquila-web/node_modules/
-aquila-probe/out/
-# 探针报告（probe_report_*.txt / probe_detail_*.csv）须归档，供 G5/F-CRAWL-01 取证，不忽略
-# 手动 curl 落地的临时响应快照属调试产物，忽略
-*.html
+aquila-web/dist/
 
-# ---- IDE / OS ----
-.idea/
-*.iml
-.vscode/
-.DS_Store
-
-# ---- runtime ----
-*.log
+# Local configuration and credentials
 .env
+.env.*
+!.env.example
+application-local.yml
+
+# IDE and operating system files
+.idea/
+.vscode/
+*.iml
+Thumbs.db
+.DS_Store
