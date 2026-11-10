@@ -52,6 +52,9 @@ class SessionSecurityTest {
         properties.add("aquila.database.url", () -> System.getenv("STOCK_MYSQL_IT_URL"));
         properties.add("aquila.database.username", () -> System.getenv("STOCK_MYSQL_IT_USER"));
         properties.add("aquila.database.password", () -> System.getenv("STOCK_MYSQL_IT_PASSWORD"));
+        properties.add("spring.flyway.url", () -> System.getenv("STOCK_MYSQL_IT_FLYWAY_URL"));
+        properties.add("spring.flyway.user", () -> System.getenv("STOCK_MYSQL_IT_FLYWAY_USER"));
+        properties.add("spring.flyway.password", () -> System.getenv("STOCK_MYSQL_IT_FLYWAY_PASSWORD"));
         properties.add("aquila.security.allowed-origin", () -> "http://localhost:8080");
         properties.add("aquila.security.totp-encryption-key", () -> System.getenv("STOCK_TOTP_ENCRYPTION_KEY"));
         properties.add("spring.flyway.enabled", () -> "true");

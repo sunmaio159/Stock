@@ -6,6 +6,9 @@ spring:
     name: aquila-server
   flyway:
     enabled: ${STOCK_FLYWAY_ENABLED:false}
+    url: ${STOCK_FLYWAY_URL:}
+    user: ${STOCK_FLYWAY_USER:}
+    password: ${STOCK_FLYWAY_PASSWORD:}
 
 aquila:
   database:

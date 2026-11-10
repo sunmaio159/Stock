@@ -54,14 +54,24 @@ application opens its database connection only when `STOCK_DB_ENABLED=true`,
 and the existing database target guard permits only
 `stock_greenfield_20261109`. Keep `STOCK_FLYWAY_ENABLED=false` for the
 runtime account; migrations require the separately scoped migration account.
+When Flyway is enabled, configure `STOCK_FLYWAY_URL`,
+`STOCK_FLYWAY_USER`, and `STOCK_FLYWAY_PASSWORD`. Startup fails closed if any
+migration setting is missing, if its credentials share the runtime username
+or password, or if its URL/schema is not exactly the permitted greenfield
+target. Flyway receives its own URL and credentials; the application Hikari
+pool continues to use only `STOCK_DB_URL`, `STOCK_DB_USER`, and
+`STOCK_DB_PASSWORD`.
 
 MySQL auth integration tests require all of `STOCK_MYSQL_IT_SCHEMA`,
 `STOCK_MYSQL_IT_URL`, `STOCK_MYSQL_IT_USER`, `STOCK_MYSQL_IT_PASSWORD`, and
-`STOCK_TOTP_ENCRYPTION_KEY`. They are disabled unless the schema value exactly
-matches `stock_greenfield_20261109`, the MySQL profile is enabled, and the
-target guard accepts the JDBC URL. These tests apply the migration and mutate
-only that isolated schema. No database credentials or MySQL service were
-available during this implementation; database acceptance remains pending.
+`STOCK_MYSQL_IT_FLYWAY_URL`, `STOCK_MYSQL_IT_FLYWAY_USER`,
+`STOCK_MYSQL_IT_FLYWAY_PASSWORD`, and `STOCK_TOTP_ENCRYPTION_KEY`. They are
+disabled unless the schema value exactly matches `stock_greenfield_20261109`,
+the MySQL profile is enabled, and both runtime and migration target guards
+accept their respective credentials and URLs. These tests apply the migration
+with the migration account and mutate only that isolated schema with the
+runtime account. No database credentials or MySQL service were available
+during this implementation; database acceptance remains pending.
 
 The observed local runtime is Java 20.0.1, Maven 3.9.3, Node 23.11.0, and npm
 10.9.2 on Windows 11. Maven compiles with `--release 17`; execution under an

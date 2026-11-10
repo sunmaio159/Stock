@@ -19,6 +19,11 @@ public class DatabaseConfiguration {
             @Value("${aquila.database.url:}") String url,
             @Value("${aquila.database.username:}") String username,
             @Value("${aquila.database.password:}") String password) {
+        return new HikariDataSource(runtimeDataSourceConfig(targetPolicy, url, username, password));
+    }
+
+    static HikariConfig runtimeDataSourceConfig(
+            DatabaseTargetPolicy targetPolicy, String url, String username, String password) {
         targetPolicy.validateConfiguration();
         if (url.isBlank() || username.isBlank() || password.isBlank()) {
             throw new IllegalStateException("An explicit greenfield MySQL URL and scoped credentials are required");
@@ -28,7 +33,7 @@ public class DatabaseConfiguration {
         config.setUsername(username);
         config.setPassword(password);
         config.setPoolName("aquila-greenfield");
-        return new HikariDataSource(config);
+        return config;
     }
 
     @Bean

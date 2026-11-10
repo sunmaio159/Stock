@@ -51,6 +51,17 @@ public class DatabaseTargetPolicy {
                     "Database connection requires STOCK_DB_USER and STOCK_DB_PASSWORD");
         }
 
+        validateTargetUrl(schemaName, jdbcUrl);
+    }
+
+    public static void validateTargetUrl(String schemaName, String jdbcUrl) {
+        if (!GREENFIELD_SCHEMA.equals(schemaName)) {
+            throw new IllegalStateException("Only schema " + GREENFIELD_SCHEMA + " is permitted");
+        }
+        if (jdbcUrl == null || jdbcUrl.isBlank()) {
+            throw new IllegalStateException("Database URL must name only " + GREENFIELD_SCHEMA);
+        }
+
         URI target;
         try {
             if (!jdbcUrl.startsWith("jdbc:mysql://")) {
