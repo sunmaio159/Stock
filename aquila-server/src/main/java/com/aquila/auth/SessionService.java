@@ -295,6 +295,38 @@ public class SessionService {
         }
     }
 
+    public List<SessionSummary> listSessions(String sessionToken) {
+        SessionPrincipal principal = requireAdminSession(sessionToken);
+        return jdbc.query(
+                "SELECT session_id, purpose, revoked_at FROM sys_user_session "
+                        + "WHERE user_id = ? ORDER BY session_id",
+                (result, rowNum) -> new SessionSummary(
+                        result.getString("session_id"),
+                        result.getString("purpose"),
+                        principal.sessionId().equals(result.getString("session_id")),
+                        result.getTimestamp("revoked_at") != null),
+                principal.userId());
+    }
+
+    public boolean revokeOwned(String sessionToken, String sessionId) {
+        SessionPrincipal principal = requireAdminSession(sessionToken);
+        Instant now = clock.instant();
+        int changed = jdbc.update(
+                "UPDATE sys_user_session SET revoked_at = ? "
+                        + "WHERE session_id = ? AND user_id = ? AND revoked_at IS NULL",
+                Timestamp.from(now), sessionId, principal.userId());
+        if (changed > 0) {
+            jdbc.update(
+                    "INSERT INTO sys_audit_log (log_id, actor_user_id, action, metadata_json, created_at) "
+                            + "SELECT ?, user_id, 'SESSION_REVOKED', JSON_OBJECT(), ? "
+                            + "FROM sys_user_session WHERE session_id = ?",
+                    UUID.randomUUID().toString(),
+                    Timestamp.from(now),
+                    sessionId);
+        }
+        return changed > 0;
+    }
+
     public Optional<SessionPrincipal> findActiveSession(String token) {
         if (blank(token)) {
             return Optional.empty();
@@ -600,6 +632,9 @@ public class SessionService {
     }
 
     public record SessionPrincipal(String sessionId, String userId, String username, String purpose) {}
+
+    public record SessionSummary(
+            String sessionId, String purpose, boolean current, boolean revoked) {}
 
     public record ReauthGrant(String token, Instant expiresAt) {
         @Override

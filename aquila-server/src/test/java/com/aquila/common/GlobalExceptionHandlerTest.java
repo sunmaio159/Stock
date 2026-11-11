@@ -1,15 +1,19 @@
 package com.aquila.common;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
@@ -53,6 +57,37 @@ class GlobalExceptionHandlerTest {
                                 .replaceAll("(?s).*\"traceId\":\"([^\"]+)\".*", "$1")));
     }
 
+    private final MockMvc payloadMvc = MockMvcBuilders
+            .standaloneSetup(new PayloadController())
+            .setControllerAdvice(new GlobalExceptionHandler())
+            .addFilters(new TraceIdFilter())
+            .build();
+
+    @Test
+    void malformedJsonReturnsBadRequestEnvelope() throws Exception {
+        payloadMvc.perform(post("/payload").contentType(MediaType.APPLICATION_JSON).content("{"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.data").doesNotExist())
+                .andExpect(jsonPath("$.traceId").isNotEmpty());
+    }
+
+    @Test
+    void unsupportedMediaTypeReturns415Envelope() throws Exception {
+        payloadMvc.perform(post("/payload").contentType(MediaType.TEXT_PLAIN).content("plain"))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.code").value(415))
+                .andExpect(jsonPath("$.traceId").isNotEmpty());
+    }
+
+    @Test
+    void unsupportedMethodReturns405Envelope() throws Exception {
+        payloadMvc.perform(get("/payload"))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(jsonPath("$.code").value(405))
+                .andExpect(jsonPath("$.traceId").isNotEmpty());
+    }
+
     @RestController
     static class FailureController {
         @GetMapping("/failure")
@@ -60,6 +95,16 @@ class GlobalExceptionHandlerTest {
             throw new IllegalStateException("private implementation detail");
         }
     }
+
+    @RestController
+    static class PayloadController {
+        @PostMapping("/payload")
+        String accept(@RequestBody Payload payload) {
+            return payload.value();
+        }
+    }
+
+    record Payload(String value) {}
 
     @RestController
     static class NoResourceController {

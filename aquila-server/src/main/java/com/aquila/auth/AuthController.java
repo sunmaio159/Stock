@@ -7,6 +7,7 @@ import com.aquila.auth.SessionService.RecoveryLoginRequest;
 import com.aquila.auth.SessionService.ReauthGrant;
 import com.aquila.auth.SessionService.ReauthRequest;
 import com.aquila.auth.SessionService.SessionPrincipal;
+import com.aquila.auth.SessionService.SessionSummary;
 import com.aquila.auth.SessionService.TotpEnrollment;
 import com.aquila.common.Result;
 import com.aquila.common.TraceIdFilter;
@@ -18,8 +19,11 @@ import java.util.List;
 import java.util.Map;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseCookie;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -160,9 +164,11 @@ public class AuthController {
     }
 
     @PostMapping("/recovery/rebind/start")
-    public Result<TotpSetupResponse> beginRecoveryRebind(HttpServletRequest request) {
+    public Result<TotpSetupResponse> beginRecoveryRebind(
+            HttpServletRequest request, HttpServletResponse response) {
         TotpEnrollment enrollment =
                 sessions.beginRecoveryRebind(CsrfFilter.cookieValue(request, CsrfFilter.RECOVERY_COOKIE));
+        response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
         return Result.success(
                 new TotpSetupResponse(enrollment.secret(), enrollment.otpauthUri()),
                 traceId(request));
@@ -205,6 +211,26 @@ public class AuthController {
                 traceId(request));
     }
 
+    @GetMapping("/sessions")
+    public Result<List<SessionSummary>> listSessions(
+            HttpServletRequest request, HttpServletResponse response) {
+        List<SessionSummary> summaries = sessions.listSessions(
+                CsrfFilter.cookieValue(request, CsrfFilter.SESSION_COOKIE));
+        response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
+        return Result.success(summaries, traceId(request));
+    }
+
+    @DeleteMapping("/sessions/{id}")
+    public Result<Map<String, Boolean>> revokeSession(
+            @PathVariable("id") String id, HttpServletRequest request) {
+        boolean revoked = sessions.revokeOwned(
+                CsrfFilter.cookieValue(request, CsrfFilter.SESSION_COOKIE), id);
+        if (!revoked) {
+            throw new AuthException(HttpStatus.NOT_FOUND, 404, "Session not found");
+        }
+        return Result.success(Map.of("revoked", true), traceId(request));
+    }
+
     @PostMapping("/reauth")
     public Result<ReauthResponse> reauthenticate(
             @RequestBody ReauthPayload body,
@@ -217,14 +243,17 @@ public class AuthController {
                         body == null ? null : body.totpCode()));
         Duration maxAge = Duration.between(clock.instant(), grant.expiresAt());
         setCookie(response, request, CsrfFilter.REAUTH_COOKIE, grant.token(), maxAge, true);
+        response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
         return Result.success(new ReauthResponse(grant.expiresAt()), traceId(request));
     }
 
     @PostMapping("/totp/setup")
-    public Result<TotpSetupResponse> beginTotpSetup(HttpServletRequest request) {
+    public Result<TotpSetupResponse> beginTotpSetup(
+            HttpServletRequest request, HttpServletResponse response) {
         TotpEnrollment enrollment = sessions.beginTotpSetup(
                 CsrfFilter.cookieValue(request, CsrfFilter.SESSION_COOKIE),
                 CsrfFilter.cookieValue(request, CsrfFilter.REAUTH_COOKIE));
+        response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store");
         return Result.success(
                 new TotpSetupResponse(enrollment.secret(), enrollment.otpauthUri()),
                 traceId(request));

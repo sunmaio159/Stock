@@ -57,6 +57,7 @@ class AuthFlowIntegrationTest {
         jdbc.update("DELETE FROM sys_recovery_code");
         jdbc.update("DELETE FROM sys_recovery_code_batch");
         jdbc.update("DELETE FROM sys_reauth_context");
+        jdbc.update("DELETE FROM sys_csrf_context");
         jdbc.update("DELETE FROM sys_user_session");
         jdbc.update("DELETE FROM sys_bootstrap_context");
         jdbc.update("DELETE FROM sys_user");

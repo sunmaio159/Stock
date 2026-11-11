@@ -94,6 +94,10 @@ paths:
                 $ref: '#/components/schemas/AuthResult'
         '401':
           description: Credentials are invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResult'
         '429':
           description: Ten failures occurred within the rolling five-minute window.
   /api/auth/recovery-login:
@@ -189,6 +193,60 @@ paths:
                 $ref: '#/components/schemas/AuthResult'
         '401':
           description: No active session exists.
+  /api/me:
+    get:
+      operationId: getCurrentUser
+      summary: Resolve the current administrator from the session cookie
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Current administrator identity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResult'
+        '401':
+          description: No active administrator session exists.
+  /api/auth/sessions:
+    get:
+      operationId: listSessions
+      summary: List administrator sessions with current and revocation state
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Sessions belonging to the current administrator.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionListResult'
+        '401':
+          description: No active administrator session exists.
+  /api/auth/sessions/{id}:
+    delete:
+      operationId: revokeSession
+      summary: Revoke one session owned by the current administrator
+      security:
+        - csrfToken: []
+          sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Session was revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BooleanResult'
+        '401':
+          description: No active administrator session exists.
+        '404':
+          description: The session does not exist or is already revoked.
   /api/auth/reauth:
     post:
       operationId: reauthenticate
@@ -324,11 +382,27 @@ components:
       properties:
         code:
           type: integer
+          description: 0 on success; otherwise the HTTP status of the error envelope.
         message:
           type: string
         data:
           type: object
           additionalProperties: true
+        traceId:
+          type: string
+          format: uuid
+    ErrorResult:
+      type: object
+      required: [code, message, data, traceId]
+      properties:
+        code:
+          type: integer
+          description: Matches the HTTP status of the response.
+        message:
+          type: string
+        data:
+          type: 'null'
+          description: Error envelopes always carry a null data value.
         traceId:
           type: string
           format: uuid
@@ -343,7 +417,7 @@ components:
               properties:
                 token:
                   type: string
-                  writeOnly: true
+                  description: Short-lived CSRF token; the response is Cache-Control no-store.
     BooleanResult:
       allOf:
         - $ref: '#/components/schemas/AuthEnvelope'
@@ -371,9 +445,9 @@ components:
                   enum: [ADMIN, RECOVERY]
                 recoveryCodes:
                   type: array
+                  description: One-time recovery codes shown once; response is Cache-Control no-store.
                   items:
                     type: string
-                    writeOnly: true
     TotpSetupResult:
       allOf:
         - $ref: '#/components/schemas/AuthEnvelope'
@@ -385,11 +459,11 @@ components:
               properties:
                 secret:
                   type: string
-                  writeOnly: true
+                  description: One-time authenticator secret; response is Cache-Control no-store.
                 otpauthUri:
                   type: string
                   format: uri
-                  writeOnly: true
+                  description: Provisioning URI returned once with the secret.
     RecoveryCodesResult:
       allOf:
         - $ref: '#/components/schemas/AuthEnvelope'
@@ -401,9 +475,9 @@ components:
               properties:
                 codes:
                   type: array
+                  description: One-time recovery codes shown once; response is Cache-Control no-store.
                   items:
                     type: string
-                    writeOnly: true
                 shownOnce:
                   type: boolean
                   const: true
@@ -421,6 +495,41 @@ components:
                 expiresAt:
                   type: string
                   format: date-time
+    MeResult:
+      allOf:
+        - $ref: '#/components/schemas/AuthEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [username, userId]
+              properties:
+                username:
+                  type: string
+                userId:
+                  type: string
+    SessionListResult:
+      allOf:
+        - $ref: '#/components/schemas/AuthEnvelope'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/SessionSummary'
+    SessionSummary:
+      type: object
+      required: [sessionId, purpose, current, revoked]
+      properties:
+        sessionId:
+          type: string
+        purpose:
+          type: string
+          enum: [ADMIN, RECOVERY]
+        current:
+          type: boolean
+        revoked:
+          type: boolean
     BootstrapTokenRequest:
       type: object
       required: [bootstrapToken]
