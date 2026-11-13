@@ -351,6 +351,6 @@ First review: spec compliance ❌ (3 findings); code quality **Changes required*
 - Flyway 10.20.1 / MySQL 8.4 compatibility decision remains OPEN from Task 1.
 - G02–G05 and candidate ranking remain OPEN; no eligible source coverage exists.
 - The 300 capacity ceiling and execution budget are not enabled. Raising the ceiling requires G03/G02 evidence and an owner decision via code change, not configuration.
-- The Task 1 closure documentation changes remain uncommitted; this stage only stages Stage B Task 2 reviewed paths.
+- Unrelated pre-existing edits and untracked documents under `落地文档设计/` were deliberately left unstaged; this commit stages only Stage B Task 2 reviewed paths.
 
 Confirmation: the owner asked to complete Task 5 (review fixes, commit and document marking) on 2026-11-14.
