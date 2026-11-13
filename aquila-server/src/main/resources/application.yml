@@ -20,3 +20,11 @@ aquila:
   security:
     allowed-origin: ${STOCK_ALLOWED_ORIGIN:}
     totp-encryption-key: ${STOCK_TOTP_ENCRYPTION_KEY:}
+  limits:
+    watchlist-capacity: 20
+    hotlist-capacity: 20
+    max-groups: 20
+    import-upload-bytes: 2097152
+    import-rows: 1000
+    export-rows: 100
+    replay-rows: 1000

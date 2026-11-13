@@ -6,7 +6,7 @@ import org.junit.jupiter.api.extension.ConditionEvaluationResult;
 import org.junit.jupiter.api.extension.ExecutionCondition;
 import org.junit.jupiter.api.extension.ExtensionContext;
 
-final class AuthMySqlCondition implements ExecutionCondition {
+public final class AuthMySqlCondition implements ExecutionCondition {
     @Override
     public ConditionEvaluationResult evaluateExecutionCondition(ExtensionContext context) {
         if (!"true".equals(System.getProperty("mysql.it"))) {

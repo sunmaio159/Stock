@@ -9,6 +9,7 @@ import com.aquila.auth.BootstrapApplicationService.BootstrapConfirmation;
 import com.aquila.auth.BootstrapApplicationService.BootstrapMaterial;
 import com.aquila.auth.SessionService.LoginRequest;
 import com.aquila.config.DatabaseTargetPolicy;
+import com.aquila.masterdata.MasterDataFixture;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.Cookie;
@@ -62,6 +63,7 @@ class SessionSecurityTest {
 
     @BeforeEach
     void clearIdentityState() {
+        MasterDataFixture.clearStageBTables(jdbc);
         jdbc.update("DELETE FROM sys_audit_log");
         jdbc.update("DELETE FROM sys_login_failure");
         jdbc.update("DELETE FROM sys_recovery_code");

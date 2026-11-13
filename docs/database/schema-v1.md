@@ -28,10 +28,10 @@ data category, not an invented number of days.
 | `m1_watchlist_item` | User/security membership and ordering are explicit; exact uniqueness is frozen in B | `m1_watchlist_group`, `m2_security`, `sys_user` | User configuration | V2 — B |
 | `m1_watchlist_preference` | One effective preference per agreed user/security scope; B freezes the key | `sys_user`, `m2_security` | User configuration | V2 — B |
 | Manual hot-list item | User plus security is unique; manual entries remain distinct from computed candidates | `sys_user`, `m2_security` | User configuration | V2 — B |
-| `m2_security` | Canonical `(exchange, code)` key; aliases do not replace the canonical key | None | Reference data | V3 — B |
-| `m2_security_alias` | Alias identity and normalization rules are frozen in B | `m2_security` | Reference data | V3 — B |
-| `m2_trade_calendar` | One canonical trading-day fact per agreed market/date key | Market/calendar scope | Reference data | V3 — B |
-| `sys_import_batch` and import rows | Batch and row-level validation outcomes are traceable and idempotent; B freezes row key | `sys_user`; rows belong to a batch and may reference `m2_security` | Import evidence | V3 — B |
+| `m2_security` | Canonical `(exchange, code)` key; aliases do not replace the canonical key | None | Reference data | V2 — B |
+| `m2_security_alias` | Alias identity and normalization rules are frozen in B | `m2_security` | Reference data | V2 — B |
+| `m2_trade_calendar` | One canonical trading-day fact per agreed market/date key | Market/calendar scope | Reference data | V2 — B |
+| `sys_import_batch` and import rows | Batch and row-level validation outcomes are traceable and idempotent; B freezes row key | `sys_user`; rows belong to a batch and may reference `m2_security` | Import evidence | V2 — B |
 | `m3_source_config` | Source permission version, validity, rate limit, cursor version, lease, and fencing token are distinct state | Source/adapter identity | Licensed-source configuration | V4 — C |
 | `m3_task_instance` | `run_key`, attempt, state, and before/after cursor are recorded; lease owner and fencing token guard commits | `m3_source_config` | Task execution lifecycle | V4 — C |
 | Collection coverage fact | Records source, subscription scope/version, business interval, cursors, run, state, adapter contract version, evidence reference, and observation time | `m3_source_config`, `m3_task_instance` | Coverage evidence | V4 — C |
@@ -55,7 +55,8 @@ data category, not an invented number of days.
 
 ## Migration boundaries
 
-- V1–V3 are owned by Stage B; V4–V6 by Stage C; V7 by Stage D; V8 by Stages E–F as identified above.
+- V1–V2 are owned by Stage B (V1 by Task 1, V2 by Task 2). **V3 is unused in Stage B**: the owner selected migration option A on 2026-11-11, so Stage B Task 2 creates a single `V2__masterdata_watchlist_schema.sql` containing all Stage B tables listed above. This removes the cross-migration foreign-key ordering problem between `m1_watchlist_item` and `m2_security`. V4–V6 are owned by Stage C; V7 by Stage D; V8 by Stages E–F as identified above.
+- The option A selection is a migration-ownership correction recorded in `docs/evidence/greenfield/README.md`; it is not a product-scope change. No physical V3 migration exists in this stage.
 - No migration or DDL is created by Stage A. No historical DDL, database, or Flyway history is an input.
 - All business migrations target only the explicitly provisioned new schema
   `stock_greenfield_20261109`. If it is not provisioned, MySQL acceptance is

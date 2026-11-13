@@ -5,6 +5,25 @@ export interface Result<T> {
   traceId: string;
 }
 
+export class ApiRequestError extends Error {
+  readonly status: number;
+  readonly code: number;
+
+  constructor(message: string, status: number, code: number) {
+    super(message);
+    this.name = 'ApiRequestError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+export function errorMessage(cause: unknown): string {
+  if (cause instanceof ApiRequestError) {
+    return `[${cause.code}] ${cause.message}`;
+  }
+  return cause instanceof Error ? cause.message : 'The request failed.';
+}
+
 export async function request<T>(
   path: string,
   init: RequestInit = {},
@@ -53,7 +72,11 @@ async function readResult<T>(response: Response): Promise<Result<T>> {
     throw new Error('Malformed API response');
   }
   if (!response.ok) {
-    throw new Error(payload.message || `HTTP ${response.status}`);
+    throw new ApiRequestError(
+      payload.message || `HTTP ${response.status}`,
+      response.status,
+      payload.code,
+    );
   }
   return payload;
 }

@@ -111,7 +111,7 @@ public final class CsrfFilter extends OncePerRequestFilter {
                         || HttpMethod.DELETE.matches(method));
     }
 
-    static String cookieValue(HttpServletRequest request, String name) {
+    public static String cookieValue(HttpServletRequest request, String name) {
         Cookie[] cookies = request.getCookies();
         if (cookies == null) {
             return null;

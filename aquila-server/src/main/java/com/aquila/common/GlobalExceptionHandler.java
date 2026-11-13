@@ -2,6 +2,9 @@ package com.aquila.common;
 
 import com.aquila.auth.AuthException;
 import jakarta.servlet.http.HttpServletRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -17,6 +20,8 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
     @ExceptionHandler(AuthException.class)
     public ResponseEntity<Result<Void>> handleAuthentication(
             AuthException exception,
@@ -27,6 +32,20 @@ public class GlobalExceptionHandler {
                         exception.code(),
                         exception.getMessage(),
                         traceId == null ? null : traceId.toString()));
+    }
+
+    @ExceptionHandler(ApiException.class)
+    public ResponseEntity<Result<Void>> handleApi(
+            ApiException exception,
+            HttpServletRequest request) {
+        return error(exception.status(), exception.code(), exception.getMessage(), request);
+    }
+
+    @ExceptionHandler(DuplicateKeyException.class)
+    public ResponseEntity<Result<Void>> handleDuplicateKey(
+            DuplicateKeyException exception,
+            HttpServletRequest request) {
+        return error(HttpStatus.CONFLICT, 409, "Resource already exists", request);
     }
 
     @ExceptionHandler(NoResourceFoundException.class)
@@ -65,6 +84,9 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Result<Void>> handleUnexpected(
             Exception exception,
             HttpServletRequest request) {
+        Object traceId = request.getAttribute(TraceIdFilter.TRACE_ID_ATTRIBUTE);
+        log.error("Unhandled request failure traceId={} type={}",
+                traceId, exception.getClass().getSimpleName());
         return error(HttpStatus.INTERNAL_SERVER_ERROR, 500, "Internal server error", request);
     }
 

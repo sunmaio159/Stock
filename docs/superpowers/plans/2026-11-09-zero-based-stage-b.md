@@ -112,24 +112,26 @@ Expected: PASS on MySQL 8, including concurrent one-time consumption. Run full b
 - Consumes: authenticated principal and session/CSRF services from Task 1.
 - Produces: `SecurityService.search(String keyword, int page, int size): Page<SecurityDto>`; `WatchlistService.add(String groupId, String securityCode, String idempotencyKey): WatchlistItem`; `ImportService.commit(String batchId, String idempotencyKey): ImportResult`.
 
-- [ ] **Step 1: Add failing data and concurrency tests**
+- [x] **Step 1: Add failing data and concurrency tests**
 
 Test canonical `SH:600000`/`SZ:000001` parsing, alias resolution, invalid market/code, distinct-security capacity across groups, duplicate item conflict, sort expectedVersion conflict, hotlist/candidate separation, import row errors, idempotent commit, and concurrent capacity race.
 
-- [ ] **Step 2: Add V2 master-data migration**
+- [x] **Step 2: Add V2 master-data migration**
 
 Create securities/aliases/calendar, watchlist groups/items/preferences, hotlist, capacity lock, import batches/rows and idempotency tables with unique keys and pagination/sort indexes. Use the approved table map.
 
-- [ ] **Step 3: Implement APIs and application services**
+- [x] **Step 3: Implement APIs and application services**
 
 Implement search, group/item CRUD, reorder with expected version, manual hotlist separate from candidates, import preview and atomic watchlist commit. Candidate ranking remains unavailable until eligible source coverage exists.
 
-- [ ] **Step 4: Implement screens and validate contract**
+- [x] **Step 4: Implement screens and validate contract**
 
 Add search, watchlist, hotlist, and import preview/commit/error states; update OpenAPI and client DTOs.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run: `mvn -f aquila-server/pom.xml -Pmysql-it -Dtest=ImportIdempotencyTest,WatchlistConcurrencyTest test`
 
 Expected: PASS. Run full backend tests, frontend tests/build, and OpenAPI lint. Commit `feat: add securities and watchlists` with required trailer.
+
+Acceptance 2026-11-14: Step 5 command and full backend suite 113/113 PASS on real MySQL 8; frontend typecheck, vitest 5/5, OpenAPI lint, Vite build, `mvn package` and same-origin jar check PASS. Two-stage independent review closed 3 Critical and 9 Important findings with a clean re-review; dispositions recorded in `docs/evidence/greenfield/README.md` §Stage B Task 2 closure. Committed as `feat: add securities and watchlists` with the required Copilot co-author trailer.

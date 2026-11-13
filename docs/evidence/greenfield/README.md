@@ -312,3 +312,45 @@ marking on 2026-11-13; recorded here with the evidence above.
 
 The commit identifier for these review-fix changes is recorded in the Stage B
 SDD ledger rather than here, so this file does not become stale after commit.
+
+## Stage B Task 2 closure — 2026-11-14
+
+### Acceptance evidence (Java 17.0.2, isolated MySQL 8)
+
+- Plan Step 5 command `mvn -f aquila-server/pom.xml -Pmysql-it -Dtest=ImportIdempotencyTest,WatchlistConcurrencyTest test`: **18 tests, 0 failures, 0 errors, 0 skipped**.
+- Full backend `mvn -Pmysql-it -Dtest=!FlywayMySqlIntegrationTest test`: **113 tests, 0 failures, 0 errors, 0 skipped** (the empty-schema check is mutually exclusive and was validated separately).
+- Frontend: `vue-tsc --noEmit` PASS; vitest **5/5**; Redocly OpenAPI lint PASS; Vite build PASS.
+- `mvn -DskipTests package` PASS; `BOOT-INF/classes/static/index.html` present in the jar (same-origin serving).
+- No old database was connected, inspected or migrated. Runtime accounts retain no DDL rights; `STOCK_DB_ENABLED` / `STOCK_FLYWAY_ENABLED` remain false for the application.
+
+### Independent review disposition
+
+First review: spec compliance ❌ (3 findings); code quality **Changes required** (3 Critical, 9 Important, 12 Minor). A fix round and a read-only re-review closed all 3 Critical and all 9 Important; the re-review's own two remaining Important findings were fixed and re-verified.
+
+| ID | Finding | Disposition |
+|---|---|---|
+| C-1 | Idempotency keys had no scope and were not bound to path/hash | Fixed: `com/aquila/common/IdempotencyStore.java` with `SCOPE:key`, `request_path` + SHA-256 `request_hash` validation, typed `response_json`, 100-char raw-key bound. Regression tests in both DB suites. |
+| C-2 | Concurrent commit replay lost idempotency under REPEATABLE READ | Fixed: current-read recheck after `sys_import_batch ... FOR UPDATE`; concurrent replay test. |
+| C-3 | `addHotlist` was not serialised | Fixed: shared `CapacityGuard.lock`; concurrent hotlist test asserts exactly one winner at 20. |
+| I-1 | reorder accepted partial item sets | Fixed: full-set / no-duplicate / ownership validation with version rollback; test. |
+| I-3 | LIKE wildcards and alias normalisation produced 500s | Fixed: `ESCAPE` + `escapeLike` + alias short-circuit; real-MySQL tests. |
+| I-4 | Missing length bounds | Fixed: fileName ≤255, raw key ≤100, OpenAPI `maxLength` aligned; test. |
+| I-5 | No conflict mapping or failure logging | Fixed: `DuplicateKeyException` → 409, traceId-only structured log. |
+| I-6 | Inconsistent lock order | Fixed: capacity lock acquired before business writes in add/commit/hotlist. |
+| I-7 | Response-status contract mismatch | Fixed: OpenAPI 400/404/409 declarations and `ApiRequestError` in the client. |
+| I-9 | Frozen limits could be raised by configuration | Fixed: `MasterDataLimits.afterPropertiesSet` ceilings for all 7 frozen fields; `MasterDataLimitsTest` asserts startup failure. |
+| Re-review #1 | `add` concurrent same-key replay still returned 409 | Fixed: current-read recheck after the capacity lock; barrier-based concurrent replay test. |
+| Re-review #2 | Ceiling covered only 2 of 7 frozen fields | Fixed: all 7 covered, with startup-failure assertions. |
+| M-1 (spec) | §5.2 interface catalogue out of sync | Fixed: Task 2 alignment record in `统一落地实施方案.md`; `/api/hotlist/candidates` marked not implemented. |
+| M-2 (spec) | V2 header comment still says "NOT executed" | **Intentionally retained**: V1/V2 were applied on 2026-11-13. Editing any byte of an applied Flyway migration changes its checksum and breaks validation. The header is a historical authoring snapshot, not a runtime claim. |
+| I-2 / I-8 | Import silently skips unknown/duplicate rows; no admin master-data import or health endpoints | **Intentionally out of scope**: the Task 2 plan and brief (authoritative) require only row errors, idempotent commit and a securities read path. Recorded in the §5.2 alignment record and transferred to the stage that owns master-data ingestion. |
+| Minor | `ESCAPE` depends on default `sql_mode`; fallback log has no stack; `scopedKey` lacks total-length assert; commit locks batch before capacity lock | Transferred as non-blocking observations; no current code path is affected. |
+
+### Remaining outside Task 2
+
+- Flyway 10.20.1 / MySQL 8.4 compatibility decision remains OPEN from Task 1.
+- G02–G05 and candidate ranking remain OPEN; no eligible source coverage exists.
+- The 300 capacity ceiling and execution budget are not enabled. Raising the ceiling requires G03/G02 evidence and an owner decision via code change, not configuration.
+- The Task 1 closure documentation changes remain uncommitted; this stage only stages Stage B Task 2 reviewed paths.
+
+Confirmation: the owner asked to complete Task 5 (review fixes, commit and document marking) on 2026-11-14.

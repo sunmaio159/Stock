@@ -9,6 +9,7 @@ import com.aquila.auth.SessionService.LoginRequest;
 import com.aquila.auth.SessionService.ReauthRequest;
 import com.aquila.auth.SessionService.RecoveryLoginRequest;
 import com.aquila.config.DatabaseTargetPolicy;
+import com.aquila.masterdata.MasterDataFixture;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -52,6 +53,7 @@ class AuthFlowIntegrationTest {
 
     @BeforeEach
     void clearIdentityState() {
+        MasterDataFixture.clearStageBTables(jdbc);
         jdbc.update("DELETE FROM sys_audit_log");
         jdbc.update("DELETE FROM sys_login_failure");
         jdbc.update("DELETE FROM sys_recovery_code");

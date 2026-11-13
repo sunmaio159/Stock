@@ -328,7 +328,311 @@ paths:
                 $ref: '#/components/schemas/RecoveryCodesResult'
         '403':
           description: Recent reauthentication is missing or expired.
+  /api/securities:
+    get:
+      operationId: searchSecurities
+      summary: Search securities by canonical code, alias or name
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: keyword
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 128
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: size
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: A page of matching securities.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecuritySearchResult'
+  /api/watchlist/groups:
+    get:
+      operationId: listWatchlistGroups
+      summary: List the administrator's watchlist groups
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Watchlist groups in display order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatchlistGroupListResult'
+    post:
+      operationId: createWatchlistGroup
+      summary: Create a watchlist group up to the frozen group limit
+      security:
+        - csrfToken: []
+          sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroupRequest'
+      responses:
+        '200':
+          description: The created group with its initial version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatchlistGroupResult'
+        '409':
+          description: The group name already exists or the group limit was reached.
+  /api/watchlist/groups/{groupId}:
+    delete:
+      operationId: deleteWatchlistGroup
+      summary: Delete a group and its items
+      security:
+        - csrfToken: []
+          sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/GroupId'
+      responses:
+        '200':
+          description: The group was deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AckResult'
+  /api/watchlist/groups/{groupId}/items:
+    get:
+      operationId: listWatchlistItems
+      summary: List items of one watchlist group
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/GroupId'
+      responses:
+        '200':
+          description: Items in display order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatchlistItemListResult'
+    post:
+      operationId: addWatchlistItem
+      summary: Add a security to a group, enforcing distinct-security capacity
+      security:
+        - csrfToken: []
+          sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/GroupId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ItemRequest'
+      responses:
+        '200':
+          description: The added item.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatchlistItemResult'
+        '400':
+          description: 'The security code is not a canonical SH: or SZ: code.'
+        '404':
+          description: The group or security does not exist.
+        '409':
+          description: Duplicate item or distinct-security capacity reached.
+  /api/watchlist/groups/{groupId}/order:
+    put:
+      operationId: reorderWatchlistGroup
+      summary: Reorder items using an expected group version
+      security:
+        - csrfToken: []
+          sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/GroupId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReorderRequest'
+      responses:
+        '200':
+          description: The group with its incremented version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatchlistGroupResult'
+        '409':
+          description: The expected version no longer matches.
+  /api/watchlist/items/{itemId}:
+    delete:
+      operationId: removeWatchlistItem
+      summary: Remove one watchlist item
+      security:
+        - csrfToken: []
+          sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/ItemId'
+      responses:
+        '200':
+          description: The item was removed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AckResult'
+  /api/hotlist:
+    get:
+      operationId: listManualHotlist
+      summary: List administrator-entered manual hotlist entries
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Manual entries only; candidate ranking is not available.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HotlistListResult'
+    post:
+      operationId: addManualHotlistItem
+      summary: Add a manual hotlist entry
+      security:
+        - csrfToken: []
+          sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HotlistRequest'
+      responses:
+        '200':
+          description: The manual entry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HotlistItemResult'
+        '404':
+          description: The security does not exist.
+        '409':
+          description: Duplicate entry or hotlist capacity reached.
+  /api/hotlist/{itemId}:
+    delete:
+      operationId: removeManualHotlistItem
+      summary: Remove a manual hotlist entry
+      security:
+        - csrfToken: []
+          sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/ItemId'
+      responses:
+        '200':
+          description: The entry was removed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AckResult'
+  /api/imports/preview:
+    post:
+      operationId: previewImport
+      summary: Validate import rows and persist a preview batch
+      security:
+        - csrfToken: []
+          sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportPreviewRequest'
+      responses:
+        '200':
+          description: Row-level validation outcomes; no watchlist items are written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportPreviewResult'
+        '400':
+          description: The row count or file name exceeds the frozen limits.
+        '413':
+          description: The upload exceeds the frozen 2 MiB limit.
+  /api/imports/{batchId}:
+    get:
+      operationId: getImportBatch
+      summary: Read a preview batch and its rows
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/BatchId'
+      responses:
+        '200':
+          description: The batch preview.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportPreviewResult'
+  /api/imports/{batchId}/commit:
+    post:
+      operationId: commitImportBatch
+      summary: Atomically commit valid rows to a watchlist group
+      security:
+        - csrfToken: []
+          sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/BatchId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommitRequest'
+      responses:
+        '200':
+          description: The commit result; repeated calls with the same key replay this result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportCommitResult'
+        '409':
+          description: The batch is no longer in preview or capacity was reached.
 components:
+  parameters:
+    GroupId:
+      name: groupId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ItemId:
+      name: itemId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    BatchId:
+      name: batchId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
   securitySchemes:
     csrfToken:
       type: apiKey
@@ -583,3 +887,297 @@ components:
         code:
           type: string
           writeOnly: true
+    AckResult:
+      type: object
+      required: [code, message, data, traceId]
+      properties:
+        code:
+          type: integer
+          const: 0
+        message:
+          type: string
+          const: OK
+        data:
+          type: boolean
+          const: true
+        traceId:
+          type: string
+          format: uuid
+    SecurityDto:
+      type: object
+      required: [securityCode, exchange, code, securityName, securityType, status]
+      properties:
+        securityCode:
+          type: string
+          description: 'Canonical SH: or SZ: prefixed code; aliases never replace it.'
+        exchange:
+          type: string
+          enum: [SH, SZ]
+        code:
+          type: string
+          pattern: '^[0-9]{6}$'
+        securityName:
+          type: string
+        securityType:
+          type: string
+        status:
+          type: string
+          enum: [ACTIVE, SUSPENDED, DELISTED]
+    SecurityPage:
+      type: object
+      required: [items, page, size, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecurityDto'
+        page:
+          type: integer
+          minimum: 0
+        size:
+          type: integer
+          minimum: 1
+          maximum: 100
+        total:
+          type: integer
+          format: int64
+    SecuritySearchResult:
+      allOf:
+        - $ref: '#/components/schemas/AuthEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SecurityPage'
+    WatchlistGroup:
+      type: object
+      required: [groupId, groupName, sortOrder, version]
+      properties:
+        groupId:
+          type: string
+          format: uuid
+        groupName:
+          type: string
+          maxLength: 80
+        sortOrder:
+          type: integer
+        version:
+          type: integer
+          format: int64
+          description: Optimistic version required by reorder requests.
+    WatchlistGroupListResult:
+      type: object
+      required: [code, message, data, traceId]
+      properties:
+        code:
+          type: integer
+          const: 0
+        message:
+          type: string
+          const: OK
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/WatchlistGroup'
+        traceId:
+          type: string
+          format: uuid
+    WatchlistGroupResult:
+      allOf:
+        - $ref: '#/components/schemas/AuthEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/WatchlistGroup'
+    WatchlistItem:
+      type: object
+      required: [itemId, groupId, securityCode, sortOrder]
+      properties:
+        itemId:
+          type: string
+          format: uuid
+        groupId:
+          type: string
+          format: uuid
+        securityCode:
+          type: string
+        sortOrder:
+          type: integer
+    WatchlistItemListResult:
+      type: object
+      required: [code, message, data, traceId]
+      properties:
+        code:
+          type: integer
+          const: 0
+        message:
+          type: string
+          const: OK
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/WatchlistItem'
+        traceId:
+          type: string
+          format: uuid
+    WatchlistItemResult:
+      allOf:
+        - $ref: '#/components/schemas/AuthEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/WatchlistItem'
+    HotlistItem:
+      type: object
+      required: [itemId, securityCode, source, sortOrder]
+      properties:
+        itemId:
+          type: string
+          format: uuid
+        securityCode:
+          type: string
+        source:
+          type: string
+          enum: [MANUAL]
+          description: Candidate ranking is unavailable until eligible source coverage exists.
+        sortOrder:
+          type: integer
+    HotlistListResult:
+      type: object
+      required: [code, message, data, traceId]
+      properties:
+        code:
+          type: integer
+          const: 0
+        message:
+          type: string
+          const: OK
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/HotlistItem'
+        traceId:
+          type: string
+          format: uuid
+    HotlistItemResult:
+      allOf:
+        - $ref: '#/components/schemas/AuthEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/HotlistItem'
+    ImportRow:
+      type: object
+      required: [rowNo, rawText, normalizedCode, errorCode]
+      properties:
+        rowNo:
+          type: integer
+          minimum: 1
+        rawText:
+          type: string
+        normalizedCode:
+          type: [string, 'null']
+          description: Canonical code when the row is valid.
+        errorCode:
+          type: [string, 'null']
+          enum: [EMPTY_ROW, MISSING_MARKET, INVALID_MARKET, INVALID_CODE, null]
+    ImportPreview:
+      type: object
+      required: [batchId, fileName, status, rowCount, errorCount, rows]
+      properties:
+        batchId:
+          type: string
+          format: uuid
+        fileName:
+          type: string
+        status:
+          type: string
+          enum: [PREVIEW, COMMITTED, EXPIRED, FAILED]
+        rowCount:
+          type: integer
+        errorCount:
+          type: integer
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImportRow'
+    ImportPreviewResult:
+      allOf:
+        - $ref: '#/components/schemas/AuthEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ImportPreview'
+    ImportCommitResponse:
+      type: object
+      required: [batchId, committedRows, status]
+      properties:
+        batchId:
+          type: string
+          format: uuid
+        committedRows:
+          type: integer
+        status:
+          type: string
+          enum: [COMMITTED]
+    ImportCommitResult:
+      allOf:
+        - $ref: '#/components/schemas/AuthEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ImportCommitResponse'
+    GroupRequest:
+      type: object
+      required: [groupName]
+      properties:
+        groupName:
+          type: string
+          minLength: 1
+          maxLength: 80
+    ItemRequest:
+      type: object
+      required: [securityCode]
+      properties:
+        securityCode:
+          type: string
+          description: 'Canonical SH: or SZ: code; a bare six-digit code is rejected.'
+        idempotencyKey:
+          type: [string, 'null']
+          maxLength: 100
+          description: Optional replay key scoped to this administrator.
+    ReorderRequest:
+      type: object
+      required: [expectedVersion, itemIds]
+      properties:
+        expectedVersion:
+          type: integer
+          format: int64
+        itemIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+    HotlistRequest:
+      type: object
+      required: [securityCode]
+      properties:
+        securityCode:
+          type: string
+    ImportPreviewRequest:
+      type: object
+      required: [fileName, content]
+      properties:
+        fileName:
+          type: string
+          maxLength: 255
+        content:
+          type: string
+          description: One canonical code per line; bounded by the frozen 2 MiB and 1000-row limits.
+    CommitRequest:
+      type: object
+      required: [idempotencyKey]
+      properties:
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 100
