@@ -260,13 +260,16 @@ public class SessionService {
             if (step.isEmpty()) {
                 throw invalidCredentials();
             }
-            jdbc.update(
+            int updated = jdbc.update(
                     "UPDATE sys_user SET totp_secret_encrypted = totp_pending_secret_encrypted, "
                             + "totp_pending_secret_encrypted = NULL, totp_pending_expires_at = NULL, "
                             + "totp_last_step = ?, updated_at = ? WHERE user_id = ?",
                     step.getAsLong(),
                     Timestamp.from(now),
                     principal.userId());
+            if (updated != 1) {
+                throw invalidCredentials();
+            }
             jdbc.update(
                     "UPDATE sys_user_session SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
                     Timestamp.from(now),
@@ -636,7 +639,7 @@ public class SessionService {
     public record SessionSummary(
             String sessionId, String purpose, boolean current, boolean revoked) {}
 
-    public record ReauthGrant(String token, Instant expiresAt) {
+    public record ReauthGrant(@JsonIgnore String token, Instant expiresAt) {
         @Override
         public String toString() {
             return "ReauthGrant[expiresAt=" + expiresAt + ", token=REDACTED]";

@@ -1,0 +1,113 @@
+# Versioned Sentiment and Workbench Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Build deterministic document sentiment, eligible stock aggregation, online analysis-version catch-up, and a version-consistent workbench.
+
+**Architecture:** Immutable algorithm/dictionary/aggregation snapshots produce document-revision results and version-keyed windows. A persisted, commit-ordered input log drives backfill and catch-up; active version switches only after validation and a bounded CAS barrier.
+
+**Tech Stack:** Java 17, Spring Boot 3, MySQL 8, Flyway, Vue 3, TypeScript.
+
+**Spec:** `docs/superpowers/specs/2026-11-09-zero-based-implementation-design.md`; roadmap: `docs/superpowers/plans/2026-11-09-zero-based-roadmap.md`; prerequisites: Stages A–C.
+
+## Global Constraints
+
+- Unknown sentiment is NULL, never silently neutral; score range is [-100,100], confidence [0,1].
+- Document-level sentiment is not per-security stance; persist eligibility and exclusion reason for ambiguous multi-security content.
+- Queries read exactly one active analysis version and expose comparable range/evidence metadata.
+- Input change watermarks are commit-ordered and continuous; do not treat max auto-increment ID as a committed watermark.
+- Bound release barrier duration and queue; failure releases barrier and retains prior active version.
+- Use only MySQL 8 greenfield schema and include required co-author trailer on commits.
+
+## Review Focus
+
+- Unknown terms/low confidence remain distinguishable from neutral; test NULL vs zero.
+- Opposite-stance multi-security articles are not directionally counted for each symbol; test persisted eligibility.
+- Concurrent/reordered input commits cannot be skipped by catch-up; test commit-ordered watermark.
+- Failed/timeout publication cannot move active pointer; test state and rollback.
+- Versioned history cannot be silently spliced; test query metadata and one-version reads.
+
+---
+
+### Task 1: Versioned Sentiment and Aggregation
+
+**Files:**
+- Create: `aquila-server/src/main/java/com/aquila/sentiment/SentimentEngine.java`
+- Create: `aquila-server/src/main/java/com/aquila/sentiment/AggregationService.java`
+- Create: `aquila-server/src/main/resources/db/migration/V5__sentiment_versions_and_windows.sql`
+- Create: `aquila-server/src/test/java/com/aquila/sentiment/SentimentEngineTest.java`
+- Create: `aquila-server/src/test/java/com/aquila/sentiment/AggregationEligibilityTest.java`
+- Create: `aquila-web/src/views/DictionaryView.vue`
+- Modify: `docs/api/openapi.yaml`
+- Modify: `docs/database/schema-v1.md`
+- Modify: `docs/evidence/greenfield/README.md`
+
+**Interfaces:**
+- Consumes: Stage C immutable document revisions, mentions, lifecycle and coverage evidence.
+- Produces: `SentimentEngine.evaluate(DocumentRevision, DictionarySnapshot): SentimentResult`; `AggregationService.rebuild(WindowKey, AnalysisVersion): WindowResult`.
+
+- [ ] **Step 1: Freeze analysis and aggregation parameters**
+
+PO approves label/score mapping, confidence interpretation, multi-security eligibility rules and aggregation policy version; record a fixed labeled evaluation set.
+
+- [ ] **Step 2: Add failing engine/aggregation tests**
+
+Test score bounds [-100,100], confidence [0,1], unknown NULL vs neutral zero, deterministic dictionary version, repeatable output, and opposite-stance/ambiguous documents retained as mentions but excluded from directional stock aggregation with reason.
+
+- [ ] **Step 3: Add V5 sentiment schema**
+
+Create immutable dictionary/algorithm/aggregation versions, document-revision sentiment result, eligibility/exclusion reason, unified version-keyed windows, dirty-window generation, and required access-path indexes.
+
+- [ ] **Step 4: Implement engine and aggregation**
+
+Use explicit versioned inputs and no external model. Persist one document-level result per revision; include eligible sample, mention count, and excluded ambiguous count distinctly.
+
+- [ ] **Step 5: Run tests and commit**
+
+Run: `mvn -f aquila-server/pom.xml -Pmysql-it -Dtest=SentimentEngineTest,AggregationEligibilityTest test`
+
+Expected: PASS on MySQL 8. Run full backend tests, frontend tests/build, and OpenAPI lint. Commit `feat: add versioned sentiment aggregation` with required trailer.
+
+### Task 2: Analysis Version Backfill and Workbench
+
+**Files:**
+- Create: `aquila-server/src/main/java/com/aquila/sentiment/AnalysisVersionService.java`
+- Create: `aquila-server/src/main/java/com/aquila/sentiment/BackfillWorker.java`
+- Create: `aquila-server/src/main/java/com/aquila/workbench/WorkbenchController.java`
+- Create: `aquila-server/src/main/java/com/aquila/workbench/WorkbenchService.java`
+- Create: `aquila-server/src/main/resources/db/migration/V6__analysis_publication.sql`
+- Create: `aquila-server/src/test/java/com/aquila/sentiment/AnalysisPublicationIntegrationTest.java`
+- Create: `aquila-web/src/views/WorkbenchView.vue`
+- Create: `aquila-web/src/views/SecurityDetailView.vue`
+- Modify: `docs/api/openapi.yaml`
+- Modify: `docs/database/schema-v1.md`
+- Modify: `docs/evidence/greenfield/README.md`
+
+**Interfaces:**
+- Produces: `AnalysisVersionService.publish(String versionId): PublishResult`; version-consistent workbench/detail queries with `analysisVersion`, `comparableFrom/To`, and `evidenceState`.
+
+- [ ] **Step 1: Write failing online catch-up tests**
+
+Continuously insert/revise/delete input while candidate backfill runs; simulate transaction commit reorder; verify no omitted changes and no mixed-version read. Inject validation failure, barrier timeout, queue overflow, and operator cancellation.
+
+- [ ] **Step 2: Freeze barrier limits from measured test load**
+
+Record VER-01 maximum duration, queue limit, backpressure, and evidence thresholds from MySQL 8 pressure runs before enabling publication.
+
+- [ ] **Step 3: Add V6 change-log and publication schema**
+
+Add commit-ordered change-log head, version lifecycle/checkpoints, backfill/catch-up watermarks, validation results, active pointer, bounded barrier, and publication audit.
+
+- [ ] **Step 4: Implement catch-up, validate, and atomic publish**
+
+Use states `DRAFT → BACKFILLING → CATCHING_UP → VALIDATING → ACTIVE`; failures become FAILED/CANCELLED, preserve prior active version, and release locks/barrier.
+
+- [ ] **Step 5: Implement workbench and historical comparison UI**
+
+Show DataCard supply state separately from sentiment quality; return one version per query and label comparable interval, evidence state, sample counts, and version boundaries.
+
+- [ ] **Step 6: Run FT-04/05, VER-01, and commit**
+
+Run: `mvn -f aquila-server/pom.xml -Pmysql-it -Dtest=AnalysisPublicationIntegrationTest test`
+
+Expected: PASS for continuous changes, commit watermark, barrier timeout/queue limit, no mixed queries, and rollback. Run frontend/build/OpenAPI checks; update evidence and commit `feat: add online analysis version publishing` with required trailer.

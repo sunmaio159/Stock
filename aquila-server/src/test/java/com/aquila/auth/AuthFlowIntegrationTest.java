@@ -103,12 +103,14 @@ class AuthFlowIntegrationTest {
     @Test
     void aTotpStepCannotAuthenticateTwice() {
         Initialized initialized = createEnabledAdministrator("totp-test");
+        int baselineSessions = jdbc.queryForObject("SELECT COUNT(*) FROM sys_user_session", Integer.class);
         String consumedAtBootstrap = totp.generateCode(initialized.material().totpSecret(), Instant.now());
 
         assertThatThrownBy(() -> sessions.login(
                 new LoginRequest("totp-test", "strong-test-password", consumedAtBootstrap)))
                 .isInstanceOf(AuthException.class);
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM sys_user_session", Integer.class)).isEqualTo(0);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM sys_user_session", Integer.class))
+                .isEqualTo(baselineSessions);
     }
 
     @Test
@@ -119,9 +121,11 @@ class AuthFlowIntegrationTest {
                 material.bootstrapToken(),
                 totp.generateCode(material.totpSecret(), Instant.now())));
         Instant sameStep = Instant.now();
+        // Bootstrap already consumed sameStep for the old secret; reauthenticate needs the next step.
         var reauth = sessions.reauthenticate(
                 session.token(),
-                new ReauthRequest("strong-test-password", totp.generateCode(material.totpSecret(), sameStep)));
+                new ReauthRequest("strong-test-password",
+                        totp.generateCode(material.totpSecret(), sameStep.plusSeconds(30))));
         var replacement = sessions.beginTotpSetup(session.token(), reauth.token());
 
         var codes = sessions.confirmTotpSetup(
