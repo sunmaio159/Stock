@@ -428,12 +428,24 @@ adapter (G02 not yet approved, so no real source is touched), per-page coverage
 facts with an honest completeness verdict, raw persistence with dedup, durable
 PARSE jobs, and worker recovery after a missed queue notification.
 
+> **Review outcome (2026-11-14): `CHANGES_REQUIRED` — NOT closed.** An independent
+> two-phase review of commit `ceae6fb` raised 2 Critical + 8 Important findings,
+> all confirmed by first-hand code inspection. The capability claims below were
+> written before that review; each over-claim now carries an explicit correction.
+> Full findings and closure preconditions:
+> `.superpowers/sdd/2026-11-09-zero-based-stage-c/task-1-review-report.md`.
+
 ### Files
 
 - `aquila-server/.../sourcepolicy/SourcePolicy.java`, `Permission.java` — fail-closed
-  permission checks (`ACCESS`, `STORE_RAW`, `STORE_NORMALIZED`, `ANALYZE`,
-  `DISPLAY`, `EXPORT`) over `m3_source_config`; an unconfigured, revoked, expired,
-  or out-of-window source is rejected.
+  status and validity-window checks over `m3_source_config`; an unconfigured, revoked,
+  expired, or out-of-window source is rejected.
+  **Correction (C2):** the six permissions are **not** checked individually — the
+  `permission` argument is used only for the null guard, `m3_source_config` has a single
+  `permission_status` column, `permits()` has no call sites, and the display endpoints
+  (`/api/sources`, `/api/sources/{code}/coverage`) consult no policy at all. 统一方案 §8.1
+  requires per-permission checks and a re-check before display/export. The exception path
+  itself is fail-closed (only `EmptyResultDataAccessException` becomes 403).
 - `aquila-server/.../crawl/SourceAdapter.java`, `FixtureSourceAdapter.java`,
   `FixtureSourcePlan.java`, `SourceFetchRequest.java`, `SourcePage.java`,
   `RawRecord.java` — versioned adapter contract; fetch/parse happen outside
@@ -444,13 +456,30 @@ PARSE jobs, and worker recovery after a missed queue notification.
   COMPLETE only when every page succeeded, terminated, and the source can prove
   completeness. A recent-N / untraceable source is explicitly prevented from
   COMPLETE (it stays UNKNOWN).
+  **Correction (I1):** that sentence describes the intent, not the implementation. The
+  verdict is exclusion-based: it never requires a terminal page, never requires
+  non-null terminal evidence, and never checks cursor continuity. An unrecognised
+  status is counted in `total` but in no category and therefore still resolves to
+  COMPLETE (currently unreachable only because the DB `chk_m3_coverage_status` CHECK
+  rejects unknown literals — the guard is the schema, not the code). Successful
+  non-terminal pages are labelled COMPLETE at page level, and the collection loop can
+  exit with `cursor == null` while `terminal == false` and still mark the run COMPLETE.
 - `aquila-server/.../crawl/CrawlApplicationService.java` — collection commit
   protocol: a short transaction claims the source lease, issues a fencing token and
   a unique run; pages are fetched/parsed outside transactions; each page commits
   atomically with its raw records, durable PARSE jobs, cursor CAS (guarded by the
   expected cursor version and fencing token), and its coverage fact. A failing page
-  keeps the interval PARTIAL and does not advance the cursor; a repeated run key is
+  keeps the interval `PARTIAL` and does not advance the cursor; a repeated run key is
   idempotent.
+  **Correction (C1):** the page-commit CAS is a tautology. `fencing_token` is read back
+  from the same `m3_source_config` row the transaction already locks and is then used as
+  its own `WHERE` condition, so it never compares against the token issued to the run
+  (`m3_task_instance.fencing_token`) or against `lease_owner`; a stale owner whose lease
+  was taken over can still commit. `beginRun` additionally reads the lease with a
+  non-locking query and issues an unconditional `UPDATE`, so two concurrent workers can
+  claim the same (non-monotonic) token. Also **I2**: after a raw upsert conflict the code
+  keeps the freshly generated `raw_record_id` instead of re-reading the persisted one,
+  so a job can reference a row that does not exist.
 - `aquila-server/.../crawl/ProcessingJobWorker.java`, `JobLease.java`,
   `JobOutcome.java` — scans durable PENDING jobs and processes them; claims with a
   lease and a monotonically increasing fencing token; an expired lease can be
@@ -495,17 +524,30 @@ found and fixed during this run are recorded in §Status below. The full backend
 suite, frontend typecheck/build, OpenAPI lint, `mvn package`, and same-origin jar
 check were also run and pass, mirroring the Stage B closure order.
 
+**Those green results are not acceptance evidence for the four blocking findings.**
+No test exercises a stale-lease page commit, no test calls the existing-but-unused
+`CrawlFixture.insertRevokedSource`, the fixture always emits `terminal ⇔ nextCursor == null`,
+and `CoverageServiceTest` feeds `terminal/traceable/outcome` straight into `decidePageStatus`
+without traversing the adapter or the transaction. Falsifying cases are listed in the review
+report and must be written first (red) when the fixes land.
+
 ### Status
 
-Implementation complete and verified. A code review (2026-11-14) found and the
-owner fixed: a blocking compile error in `SourcePolicy` (`query` →
-`queryForObject`, which also made the unconfigured-source branch fail closed
-correctly); the durable-job idempotency key was made effective by populating
-`input_revision` with the content hash (MySQL treats NULL as distinct in a unique
-index, so the key was inert); the OpenAPI `SourceConfigDto` field name was
-corrected to `sourceCode`; the worker's stale-lease path now throws
-`ApiException(CONFLICT)` instead of a raw `DataAccessException`; and an empty run
-no longer resolves to COMPLETE.
+**`CHANGES_REQUIRED` — not closed.** An independent two-phase review of `ceae6fb` raised
+2 Critical (C1 tautological page-commit fencing/CAS; C2 six permissions not checked
+individually and not re-checked on the display path) and 8 Important findings, all
+confirmed by direct code inspection. Closure preconditions and the required test additions
+are in `.superpowers/sdd/2026-11-09-zero-based-stage-c/task-1-review-report.md`; the
+register row `C-T1-01` is set to `CHANGES_REQUIRED` accordingly.
+
+Earlier in the same day a first review round and the owner's fixes addressed: a blocking
+compile error in `SourcePolicy` (`query` → `queryForObject`, which also made the
+unconfigured-source branch fail closed correctly); the durable-job idempotency key was made
+effective by populating `input_revision` with the content hash (MySQL treats NULL as
+distinct in a unique index, so the key was inert); the OpenAPI `SourceConfigDto` field name
+was corrected to `sourceCode`; the job worker's stale-lease path now throws
+`ApiException(CONFLICT)` instead of a raw `DataAccessException` (the crawl page path still
+does not — see C1); and an empty run no longer resolves to COMPLETE.
 
 IT verification (2026-11-14, owner's environment, MySQL 8.4 target
 `stock_greenfield_20261109`) found and fixed two further bugs:
@@ -516,10 +558,20 @@ IT verification (2026-11-14, owner's environment, MySQL 8.4 target
   in a non-UTC zone this landed ~8h in the *future*, so every ACTIVE source was
   rejected as "outside its validity window". Fixed by seeding `valid_from` with an
   explicit past timestamp in `CrawlFixture`.
+  **Re-assessment (2026-11-14, review round 2): partially correct, and it masked the
+  real defect.** The true root cause was the ad-hoc `serverTimezone=UTC` connection
+  parameter (removing it was right); once it is removed, `NOW(6)` reads back correctly
+  and the fixture change was not necessary. Pinning `valid_from` to `2020-01-01` makes
+  the window comparison insensitive to any timezone regression, so if the override
+  returns or JVM/DB zones diverge, all six ITs still pass — the window and lease
+  semantics moved from tested to bypassed. See I8 (mixed `NOW(6)` / `Instant.now()`
+  writes with no injected `Clock`) which remains open.
 - **`CoverageService.computeOverall` undercounts.** The per-status counters used
   `++` (once per group) while `total` used `+= row.count()`. When several pages
   share a status and `GROUP BY` collapses them into one row, the status count was
   short by N−1. Fixed by accumulating `row.count()` per status.
+  **Re-assessment:** the operator fix is correct, but the boundary is not closed —
+  the verdict is still exclusion-based and the `default` branch is fail-open (I1).
 
 Verification command (owner's session; `STOCK_MYSQL_IT_*` + `STOCK_MYSQL_IT_FLYWAY_*`
 exported from the local, git-ignored `.env`):
@@ -538,6 +590,8 @@ Credentials follow the project policy: the **runtime** account is `aquila_runtim
 Result: **PASS** — `Tests run: 10, Failures: 0, Errors: 0, Skipped: 0`
 (`CoverageServiceTest` 4/4, `CrawlRecoveryIntegrationTest` 6/6). G02 (real
 source) remains an active gate — only the fixture adapter is wired until then.
+This PASS is a no-regression observation only; per the paragraph above it does not
+establish C1, C2, I1 or I2, and is not closure evidence for `C-T1-01`.
 
 Post-§15 re-confirmation (same day): after the `.env` was aligned to the
 register above (`aquila_runtime` + no `serverTimezone`), the same command was
@@ -551,7 +605,7 @@ Recorded per 统一方案 §15 before being fixed into the local `.env`.
 
 | Item | Old | New | Reason |
 |---|---|---|---|
-| `STOCK_MYSQL_IT_URL` / `STOCK_MYSQL_IT_FLYWAY_URL` query params | `serverTimezone=UTC&useSSL=false&allowPublicKeyRetrieval=true` (added ad-hoc during first verification) | `useSSL=false&allowPublicKeyRetrieval=true&connectTimeout=10000` — matches the canonical `target/provision/env.ps1`; **no `serverTimezone` override** | The `serverTimezone=UTC` addition masked the real defect: a `DATETIME(6)` column with no timezone, read under a UTC connection on a non-UTC server, was interpreted ~8h in the future. The correct fix is the deterministic fixture `valid_from` (a fixed past timestamp), not a connection parameter. The connection string now follows the project's established UTC-storage convention without an extra override. |
+| `STOCK_MYSQL_IT_URL` / `STOCK_MYSQL_IT_FLYWAY_URL` query params | `serverTimezone=UTC&useSSL=false&allowPublicKeyRetrieval=true` (added ad-hoc during first verification) | `useSSL=false&allowPublicKeyRetrieval=true&connectTimeout=10000` — matches the canonical `target/provision/env.ps1`; **no `serverTimezone` override** | The `serverTimezone=UTC` addition masked the real defect: a `DATETIME(6)` column with no timezone, read under a UTC connection on a non-UTC server, was interpreted ~8h in the future. The correct fix is the deterministic fixture `valid_from` (a fixed past timestamp), not a connection parameter. **Correction (review round 2, 2026-11-14):** the previous sentence claiming this "follows the project's established UTC-storage convention" was wrong and is withdrawn — with no `connectionTimeZone` pinning and no `SET time_zone`, `DATETIME(6)` read/write follows the server timezone, so no UTC-storage guarantee exists. Removing the override restored the canonical string but did **not** establish a timezone convention; the open item is I8 (mixed `NOW(6)` / `Instant.now()` writes, no injected `Clock`) plus a future explicit `connectionTimeZone` decision. |
 | Runtime DB account | `root` (administrative; used during the first verification) | `aquila_runtime` (scoped CRUD only) | Project policy requires the runtime account to hold no DDL; `root` defeated the least-privilege isolation that `FlywayMigrationTargetPolicy` only partially enforces (it checks Flyway ≠ runtime, not runtime ≠ admin). Aligned to the canonical provision env. |
 
 ### Local `.env` key inventory (git-ignored; values masked)
