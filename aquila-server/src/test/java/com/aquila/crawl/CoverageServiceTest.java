@@ -48,7 +48,10 @@ class CoverageServiceTest {
             last = coverage.commitPage(new PageCommit(
                     runId, CrawlFixture.SOURCE_CODE, "DEFAULT", 1,
                     Instant.parse("2026-11-01T00:00:00Z"), Instant.parse("2026-11-02T00:00:00Z"),
-                    "cursor-" + page, terminal ? null : "cursor-" + (page + 1), page,
+                    // The first page begins at the interval boundary, so it carries no cursor,
+                    // exactly as the collection loop starts with a null cursor.
+                    page == 0 ? null : "cursor-" + page,
+                    terminal ? null : "cursor-" + (page + 1), page,
                     fail ? PageOutcome.FAILURE : PageOutcome.SUCCESS,
                     terminal, unrecoverable, traceable, CrawlFixture.ADAPTER_CONTRACT,
                     terminal ? "terminal-" + page : null, null));

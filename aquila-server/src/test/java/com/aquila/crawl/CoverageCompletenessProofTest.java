@@ -76,6 +76,27 @@ class CoverageCompletenessProofTest {
         assertThat(coverage.computeOverall(runId).overallStatus()).isEqualTo("COMPLETE");
     }
 
+    @Test
+    void terminalFactIsOnlyProofWhenItIsTheLastPageOfTheRun() {
+        String runId = newRun();
+        // A terminal fact on page 0 proves nothing while the run continues past it.
+        coverage.commitPage(page(runId, 0, null, null, true, true, "terminal-1"));
+        coverage.commitPage(page(runId, 1, null, "cursor-2", false, true, "adapter-1.0"));
+
+        assertThat(coverage.computeOverall(runId).overallStatus()).isNotEqualTo("COMPLETE");
+    }
+
+    @Test
+    void runMustBeginAtTheIntervalBoundaryToProveCompleteness() {
+        String runId = newRun();
+        // The chain is internally continuous but starts mid-stream, so the interval before
+        // "cursor-3" was never covered by this run.
+        coverage.commitPage(page(runId, 0, "cursor-3", "cursor-4", false, true, "adapter-1.0"));
+        coverage.commitPage(page(runId, 1, "cursor-4", null, true, true, "terminal-1"));
+
+        assertThat(coverage.computeOverall(runId).overallStatus()).isNotEqualTo("COMPLETE");
+    }
+
     private String newRun() {
         return UUID.randomUUID().toString();
     }

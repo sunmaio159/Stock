@@ -9,11 +9,11 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 /**
- * Read side of the source operations API. Per 统一方案 §8.1 the DISPLAY permission is
- * re-checked at the point of use rather than only at scheduling time, so no read path
- * bypasses {@link SourcePolicy}: a single source is refused outright, and the source
- * catalogue is filtered per source because one caller may hold display on some sources
- * only.
+ * Read side of the source operations API. Per the unified design §8.1 the DISPLAY
+ * permission is re-checked at the point of use rather than only at scheduling time, so no
+ * read path bypasses {@link SourcePolicy}: a single source is refused outright, and the
+ * source catalogue is filtered per source because one caller may hold display on some
+ * sources only.
  */
 @Service
 @ConditionalOnProperty(name = "aquila.database.enabled", havingValue = "true")

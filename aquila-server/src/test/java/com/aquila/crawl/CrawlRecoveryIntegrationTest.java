@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.aquila.auth.AuthMySqlCondition;
 import com.aquila.masterdata.MasterDataFixture;
 import java.time.Instant;
+import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -74,6 +75,47 @@ class CrawlRecoveryIntegrationTest {
         assertThat(jobCount("COMPLETE")).isEqualTo(6);
     }
 
+    /**
+     * Round-1 falsifying case 7. The run only proves completeness off
+     * {@code m3_coverage_fact.evidence_reference}, so the input to that proof has to be the
+     * evidence the adapter actually emitted for that page — otherwise the proof is satisfied
+     * by a value no producer wrote. A plan of three pages is used because asserting against
+     * the page count, rather than a literal, is what makes this falsifiable: dropping the
+     * per-page insert, or pointing the fact at some other page's evidence, both fail here.
+     */
+    @Test
+    void everyCommittedPageLeavesAdapterEvidenceAndTheFactPointsAtTheTerminalPagesOwn() {
+        adapter.registerPlan(CrawlFixture.SOURCE_CODE,
+                FixtureSourcePlan.traceable(3, 2, CrawlFixture.ADAPTER_CONTRACT));
+
+        CrawlResult result = crawl.runCollection(CrawlFixture.SOURCE_CODE, "DEFAULT", START, END);
+        String runId = result.coverage().runId();
+
+        assertThat(evidencePageIndexes(runId)).containsExactly(0, 1, 2);
+        assertThat(terminalEvidenceOnLastPage(runId)).isEqualTo("terminal-page-2");
+        // The page the verdict trusts must be the page the evidence was captured for.
+        assertThat(jdbc.queryForObject("""
+                SELECT evidence_reference FROM m3_coverage_fact
+                WHERE run_id = ? AND page_index = 2
+                """, String.class, runId))
+                .isEqualTo(terminalEvidenceOnLastPage(runId));
+    }
+
+    private List<Integer> evidencePageIndexes(String runId) {
+        return jdbc.query("""
+                SELECT page_index FROM m3_adapter_evidence WHERE run_id = ? ORDER BY page_index
+                """, (resultSet, rowNumber) -> resultSet.getInt(1), runId);
+    }
+
+    private String terminalEvidenceOnLastPage(String runId) {
+        List<String> values = jdbc.query("""
+                SELECT terminal_evidence FROM m3_adapter_evidence
+                WHERE run_id = ? AND page_index =
+                      (SELECT MAX(page_index) FROM m3_adapter_evidence WHERE run_id = ?)
+                """, (resultSet, rowNumber) -> resultSet.getString(1), runId, runId);
+        return values.isEmpty() ? null : values.get(0);
+    }
+
     @Test
     void pageTwoFailureKeepsRunPartialAndCursorAdvancesOnlyOnePage() {
         adapter.registerPlan(CrawlFixture.SOURCE_CODE,
@@ -85,7 +127,6 @@ class CrawlRecoveryIntegrationTest {
         assertThat(rawCount()).isEqualTo(3);
         assertThat(cursorVersion()).isEqualTo(1);
     }
-
     @Test
     void transactionRollbackPreservesCursorAndRaw() {
         adapter.registerPlan(CrawlFixture.SOURCE_CODE,

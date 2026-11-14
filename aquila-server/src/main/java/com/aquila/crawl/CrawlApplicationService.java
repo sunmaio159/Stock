@@ -63,8 +63,9 @@ public class CrawlApplicationService {
             String sourceCode, String subscriptionScope, Instant intervalStart, Instant intervalEnd) {
         SourcePolicy.SourcePermissionDecision decision = policy.require(Permission.ACCESS, sourceCode);
         policy.require(Permission.STORE_RAW, sourceCode);
-        // PARSE jobs hand content to the normalization and analysis stages, so both
-        // capabilities are re-checked here rather than only at scheduling time (§8.1).
+        // Entry gate only. PARSE jobs hand content on to the normalization and analysis
+        // stages, so the storage capabilities are re-checked per page inside the commit
+        // transaction (§8.1); a licence withdrawn mid-run stops the next page.
         policy.require(Permission.STORE_NORMALIZED, sourceCode);
         policy.require(Permission.ANALYZE, sourceCode);
 
@@ -163,6 +164,15 @@ public class CrawlApplicationService {
             String cursorBefore, SourcePage page, int pageIndex) {
         String runId = claim.runId();
         return transactions.execute(status -> {
+            // The licence is re-checked here, inside the transaction and immediately before
+            // the write it authorises, not only when the run was scheduled (§8.1). Each
+            // capability is checked separately so a partial licence cannot be laundered by an
+            // adjacent grant: the raw rows are stored, and every PARSE job queued from them
+            // feeds the normalization and analysis stages.
+            policy.require(Permission.STORE_RAW, sourceCode);
+            policy.require(Permission.STORE_NORMALIZED, sourceCode);
+            policy.require(Permission.ANALYZE, sourceCode);
+
             List<String> rawIds = new ArrayList<>();
             for (RawRecord record : page.records()) {
                 String hash = sha256(record.payload());

@@ -538,6 +538,21 @@ updated `CrawlFixture` and the stubbed read seam already in place — see
   and refused independently; revoked and unconfigured sources fail closed; the
   display and collection paths re-check at the point of use.
 
+Added in round 3 (see §Round 3 for which were observed red and which were not):
+
+- `SourceGrantRevocationMidRunIntegrationTest` — a `STORE_RAW` or `ANALYZE` grant
+  withdrawn mid-run stops the next page commit with 403 and leaves only the page that
+  committed before the withdrawal: one coverage fact, one raw row, one durable job, one
+  cursor advance.
+- `SourceOperationsHttpTest` — the real `SourceController` over MockMvc: the coverage
+  endpoint is 403 without `DISPLAY`, and `/api/sources` omits a source that lacks it.
+- `CoverageVerdictClassificationTest` — a status outside the four-word vocabulary cannot reach
+  the positive branch even when the chain looks proved, with a known-good chain as the
+  contrasting case. No database, because the classification is now a pure function.
+- Two new cases in `CoverageCompletenessProofTest` and one each in
+  `CrawlStaleLeaseIntegrationTest` (concurrent claim) and `CrawlRecoveryIntegrationTest`
+  (per-page evidence and the terminal page's own reference).
+
 ### Verification (owner, on the isolated `stock_greenfield_20261109` target)
 
 The IT suite is gated by `mysql.it=true` plus the scoped `STOCK_MYSQL_IT_*`
@@ -618,7 +633,7 @@ Green after the fixes:
   unrecognised status to `UNKNOWN` instead of the complete branch.
   **Round-2 finding F-2: the predicate is not yet anchored to the last page or to
   the interval start, so a fabricated COMPLETE is still constructible — I1 is not
-  closed.**
+  closed.** *(Closed in round 3, see below.)*
 - The raw upsert re-reads the persisted `raw_record_id` by dedup key on conflict, so
   a durable job can never reference a raw row that was not written.
 - `SourcePolicy` verifies the specific grant for each permission; the new
@@ -630,6 +645,7 @@ Green after the fixes:
   the write path in `commitPage` re-checks nothing, so §8.1's "not only at
   scheduling time" is still unmet and C2 is not closed.** The comment at
   `CrawlApplicationService` L66-67 claims otherwise and is itself false.
+  *(Closed in round 3, see below.)*
 
 Verification after the fix round, re-run from a clean `target/`:
 
@@ -645,6 +661,86 @@ Verification after the fix round, re-run from a clean `target/`:
   the jar is same-origin with the current frontend. A non-clean `package` had also
   carried three stale chunks from earlier builds, which is why the clean run is the
   recorded evidence.
+
+### Round 3 — closing F-1, F-2 and F-5 (2026-11-14, owner-approved scope)
+
+Owner decisions recorded before this round: close all three items (F-1 + F-2 + F-5), implement
+F-1 as per-capability `policy.require` inside `commitPage` rather than folding
+`permissionVersion` into the CAS, and sync the API contract in this same round.
+
+Falsifying tests written first and observed red, with the failure reason checked in each
+case:
+
+| Test | Red observed as | Cause of the red |
+|---|---|---|
+| `SourceGrantRevocationMidRunIntegrationTest.analyzeGrantWithdrawnBeforeTheSecondPageRejectsThatPageCommit` | `Expecting code to raise a throwable` | page 1 was written with no licence re-check (F-1) |
+| `…storeRawGrantWithdrawnBeforeTheSecondPageRejectsThatPageCommit` | `Expecting code to raise a throwable` | same, on the raw write (F-1) |
+| `CoverageCompletenessProofTest.terminalFactIsOnlyProofWhenItIsTheLastPageOfTheRun` | `Expecting actual: "COMPLETE" not to be equal to: "COMPLETE"` | `terminalPageProved` accepted any row (F-2) |
+| `CoverageCompletenessProofTest.runMustBeginAtTheIntervalBoundaryToProveCompleteness` | same | chain check never looked at page 0's `cursor_before` (F-2) |
+
+Three cases were written first and had to be corrected before they were trustworthy:
+
+- `CrawlRecoveryIntegrationTest` (round-1 case 7) initially asserted a hard-coded three
+  evidence rows against a two-page plan and failed with `expected: 3 but was: 2`. That was
+  my arithmetic, not a defect — one evidence row per committed page is already correct. The
+  test was rewritten to derive the expectation from the plan and to assert the invariant
+  that actually matters: the terminal page's `m3_coverage_fact.evidence_reference` equals the
+  `terminal_evidence` the adapter emitted for that same page. It then passed, so it is
+  recorded as a regression guard for case 7, **not** as a found defect.
+- `SourceGrantRevocationMidRunIntegrationTest` was registered with a single-page plan, which
+  terminates on page 0 and never reaches the check under test; the plan is now two pages of
+  one record each.
+- The same test first revoked the grant between page 0's fetch and page 0's commit, so the
+  re-check I had just added rejected page 0 itself (`coverage_fact` 0 instead of 1). The
+  withdrawal and the cursor snapshot now both happen on entry to page 1's fetch, after page
+  0 has committed. This also proved the snapshot point matters: an earlier revision recorded
+  the cursor *before* page 0 committed and asserted `0L` where the true value was `1L`.
+
+GREEN changes:
+
+- `commitPage` now calls `policy.require(STORE_RAW / STORE_NORMALIZED / ANALYZE)` as the
+  first action inside the transaction, before any raw row, durable job, evidence row or
+  coverage fact is written. The false self-description at the entry gate was rewritten to
+  say plainly that the entry checks are the entry gate only.
+- `terminalPageProved` consults only the last page in index order; `cursorChainIsContinuous`
+  additionally requires the first page to carry no `cursor_before`, so a run that starts
+  mid-stream cannot prove the interval.
+- `CoverageService` was extracted into `PageVerdict` + `resolveOverall(List<PageVerdict>)` +
+  `tally(...)` so the classification, including the out-of-vocabulary branch, is reachable
+  without a database (round-1 case 4).
+
+Contract sync (F-4): `docs/api/openapi.yaml` now documents `/api/sources` as filtered to
+sources holding `DISPLAY`, gives `/api/sources/{code}/coverage` its missing 403, states that
+`/collect`'s 403 covers a per-capability grant refused at the write point, and adds the 409
+for lease contention, claim CAS loss and fencing mismatch. `落地文档设计/Copilot/统一落地实施方案.md`
+§5.2 gained the source catalogue/coverage/collect row and a dated alignment record.
+
+One pre-existing test was broken by tightening the proof and had to be corrected rather than
+accommodated: `CoverageServiceTest.completeRunIsDeclaredComplete`. Its helper synthesised
+`cursor_before = "cursor-0"` for page 0, which the production loop never emits — it starts at
+the interval boundary with a null cursor. The helper now passes null on page 0.
+
+Two tests written for F-5 passed on first run and are recorded honestly as such:
+`CrawlStaleLeaseIntegrationTest.secondWorkerCannotClaimTheLeaseWhileItIsStillHeld` (a
+`beginRun` that already refuses while another owner holds a valid lease) and
+`SourceOperationsHttpTest`, which drives the real `SourceController` over MockMvc so the
+`DISPLAY` re-check cannot be bypassed by reverting the controller to a bare read. Case 7 is
+the third green-on-arrival test, as above. None of the three found a defect.
+
+Not re-run in this round: the empty-schema gate. `V3__source_coverage_raw.sql` is unchanged
+since the round-2 replay, and the `.env` inventory holds only the migrate and runtime
+accounts, so a drop/recreate needs the admin credential re-injected by the owner. The
+gate's last recorded result still stands as round-2 evidence; this round adds no DDL.
+
+Verification after the round 3 changes:
+
+- the six classes named in the `-Dtest=` list of §Round 3 → **20 / 0 / 0 / 0 green**;
+- full backend suite `mvn -Pmysql-it '-Dtest=!FlywayMySqlIntegrationTest' test` →
+  **144 / 0 / 0 / 0, BUILD SUCCESS** (134 before the round plus the 10 new tests);
+- frontend `typecheck` silent, `test` **5 / 5**, `build` emitting
+  `assets/index--bfHftHD.js` and `assets/index-DZaAL6_G.css`, `openapi:lint` valid;
+- `mvn clean package -DskipTests` → BUILD SUCCESS with exactly those two hashes plus
+  `index.html` in `BOOT-INF/classes/static/`, so the jar remains same-origin.
 
 ### Status
 
@@ -681,10 +777,11 @@ Full findings with my verification status:
 package `review-1d2727c..c113601.diff`.
 
 Still open and not decided by the implementer: I3–I8 and their Task 1 / Task 2
-attribution (round-1 precondition 2 — the owner's decision has not been issued), the
-`m3_processing_job` versus `m4_processing_job` naming deviation, and the OpenAPI gaps,
-which now also include the coverage 403 and the two new 409 sources introduced by
-`c113601`, not only the `/collect` 409 and coverage paging bounds recorded under M-C1.
+attribution (round-1 precondition 2 — the owner's decision has not been issued) and the
+`m3_processing_job` versus `m4_processing_job` naming deviation. F-1, F-2, F-5 and the
+OpenAPI gaps listed under F-4 were addressed in round 3 and are awaiting that round's
+independent review, so nothing here is recorded as closed on the implementer's own
+authority.
 
 Earlier in the same day a first review round and the owner's fixes addressed: a blocking
 compile error in `SourcePolicy` (`query` → `queryForObject`, which also made the

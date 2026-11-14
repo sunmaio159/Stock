@@ -7,6 +7,7 @@ import com.aquila.auth.AuthMySqlCondition;
 import com.aquila.common.ApiException;
 import com.aquila.masterdata.MasterDataFixture;
 import com.aquila.sourcepolicy.SourcePolicy;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
@@ -86,6 +87,30 @@ class CrawlStaleLeaseIntegrationTest {
         assertThat(count("SELECT COUNT(*) FROM m3_raw_record")).isZero();
         assertThat(count("SELECT COUNT(*) FROM m3_coverage_fact")).isZero();
         assertThat(leaseOwner()).isEqualTo("worker-B");
+    }
+
+    @Test
+    void secondWorkerCannotClaimTheLeaseWhileItIsStillHeld() {
+        fixtureAdapter.registerPlan(CrawlFixture.SOURCE_CODE,
+                FixtureSourcePlan.traceable(1, 1, CrawlFixture.ADAPTER_CONTRACT));
+        // Each service instance is a distinct worker: leaseOwner is per instance.
+        CrawlApplicationService holder = new CrawlApplicationService(
+                jdbc, transactions, policy, fixtureAdapter, coverage, worker);
+        holder.runCollection(CrawlFixture.SOURCE_CODE, "DEFAULT", START, END);
+
+        // Round-1 C1 root cause (b) was that two workers could claim the same
+        // non-monotonic fencing token, because the lease was read without a lock and
+        // claimed unconditionally. A live lease held by someone else must be refused.
+        CrawlApplicationService contender = new CrawlApplicationService(
+                jdbc, transactions, policy, fixtureAdapter, coverage, worker);
+
+        assertThatThrownBy(() -> contender.runCollection(
+                CrawlFixture.SOURCE_CODE, "DEFAULT", START, END.plus(Duration.ofHours(6))))
+                .isInstanceOfSatisfying(ApiException.class,
+                        exception -> assertThat(exception.status()).isEqualTo(HttpStatus.CONFLICT));
+
+        assertThat(count("SELECT COUNT(*) FROM m3_coverage_fact")).isEqualTo(1);
+        assertThat(count("SELECT DISTINCT fencing_token FROM m3_task_instance")).isEqualTo(1);
     }
 
     private long cursorVersion() {

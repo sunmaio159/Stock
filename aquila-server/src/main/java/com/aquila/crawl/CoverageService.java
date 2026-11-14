@@ -54,67 +54,93 @@ public class CoverageService {
     }
 
     public CoverageState computeOverall(String runId) {
-        List<CoverageRow> rows = jdbc.query("""
+        List<PageVerdict> pages = jdbc.query("""
                 SELECT coverage_status, cursor_before, cursor_after, evidence_reference
                 FROM m3_coverage_fact WHERE run_id = ? ORDER BY page_index
-                """, (resultSet, rowNumber) -> new CoverageRow(
+                """, (resultSet, rowNumber) -> new PageVerdict(
                         resultSet.getString("coverage_status"),
                         resultSet.getString("cursor_before"),
                         resultSet.getString("cursor_after"),
                         resultSet.getString("evidence_reference")), runId);
-        int total = rows.size();
+        Tally tally = tally(pages);
+        return new CoverageState(
+                runId, resolveOverall(pages), tally.total(), tally.complete(), tally.partial(),
+                tally.unknown(), tally.unrecoverable(), Instant.now());
+    }
+
+    /**
+     * Resolves the run-level verdict from the page verdicts, in order of page index. Kept
+     * free of database access so that the classification itself — including the branch for
+     * a status outside the known vocabulary — can be exercised directly rather than relying
+     * on the storage CHECK constraint to make it unreachable.
+     */
+    static String resolveOverall(List<PageVerdict> pages) {
+        Tally tally = tally(pages);
+        if (tally.total() == 0 || tally.unclassified() > 0) {
+            return "UNKNOWN";
+        }
+        if (tally.unrecoverable() > 0) {
+            return "UNRECOVERABLE";
+        }
+        if (tally.unknown() > 0) {
+            return "UNKNOWN";
+        }
+        if (tally.partial() > 0) {
+            return "PARTIAL";
+        }
+        // Completeness is proved, not inferred: the run must show a terminal page with
+        // non-null terminal evidence and an unbroken cursor chain across that proof.
+        if (!terminalPageProved(pages) || !cursorChainIsContinuous(pages)) {
+            return "UNKNOWN";
+        }
+        return "COMPLETE";
+    }
+
+    private static Tally tally(List<PageVerdict> pages) {
         int complete = 0;
         int partial = 0;
         int unknown = 0;
         int unrecoverable = 0;
         int unclassified = 0;
-        for (CoverageRow row : rows) {
-            switch (row.status()) {
+        for (PageVerdict page : pages) {
+            switch (page.status()) {
                 case "COMPLETE" -> complete++;
                 case "PARTIAL" -> partial++;
                 case "UNKNOWN" -> unknown++;
                 case "UNRECOVERABLE" -> unrecoverable++;
-                // An unrecognised status is never allowed to reach the positive branch,
-                // even if the storage constraint that currently prevents it is relaxed.
+                // An unrecognised status is never counted towards a positive verdict, even
+                // if the storage constraint that currently prevents it is relaxed.
                 default -> unclassified++;
             }
         }
-        String overall;
-        if (total == 0) {
-            overall = "UNKNOWN";
-        } else if (unclassified > 0) {
-            overall = "UNKNOWN";
-        } else if (unrecoverable > 0) {
-            overall = "UNRECOVERABLE";
-        } else if (unknown > 0) {
-            overall = "UNKNOWN";
-        } else if (partial > 0) {
-            overall = "PARTIAL";
-        } else if (!terminalPageProved(rows) || !cursorChainIsContinuous(rows)) {
-            // Completeness is proved, not inferred: the run must show a terminal page with
-            // non-null terminal evidence and an unbroken cursor chain across that proof.
-            overall = "UNKNOWN";
-        } else {
-            overall = "COMPLETE";
-        }
-        return new CoverageState(
-                runId, overall, total, complete, partial, unknown, unrecoverable, Instant.now());
+        return new Tally(
+                pages.size(), complete, partial, unknown, unrecoverable, unclassified);
     }
 
-    private static boolean terminalPageProved(List<CoverageRow> rows) {
-        for (CoverageRow row : rows) {
-            if ("COMPLETE".equals(row.status())
-                    && row.cursorAfter() == null
-                    && row.evidenceReference() != null) {
-                return true;
-            }
-        }
-        return false;
+    /**
+     * A terminal page proves completeness only if it is the page the run actually stopped
+     * on. An earlier page that merely looked terminal — because a contract version emitted a
+     * null cursor without ending, or a row was written out of order — proves nothing about
+     * the rest of the interval, so only the last page in index order is consulted.
+     */
+    private static boolean terminalPageProved(List<PageVerdict> pages) {
+        PageVerdict last = pages.get(pages.size() - 1);
+        return "COMPLETE".equals(last.status())
+                && last.cursorAfter() == null
+                && last.evidenceReference() != null;
     }
 
-    private static boolean cursorChainIsContinuous(List<CoverageRow> rows) {
-        for (int index = 1; index < rows.size(); index++) {
-            if (!Objects.equals(rows.get(index - 1).cursorAfter(), rows.get(index).cursorBefore())) {
+    /**
+     * The chain has to be continuous from the interval boundary, not merely internally
+     * consistent. A run that starts at a mid-stream cursor leaves everything before it
+     * uncovered, so its first page must begin with no cursor at all.
+     */
+    private static boolean cursorChainIsContinuous(List<PageVerdict> pages) {
+        if (pages.get(0).cursorBefore() != null) {
+            return false;
+        }
+        for (int index = 1; index < pages.size(); index++) {
+            if (!Objects.equals(pages.get(index - 1).cursorAfter(), pages.get(index).cursorBefore())) {
                 return false;
             }
         }
@@ -151,6 +177,11 @@ public class CoverageService {
         };
     }
 
-    private record CoverageRow(
+    /** One page's persisted verdict, the input to the run-level completeness proof. */
+    record PageVerdict(
             String status, String cursorBefore, String cursorAfter, String evidenceReference) {}
+
+    /** Page counts by status; {@code unclassified} is the outside-the-vocabulary count. */
+    private record Tally(
+            int total, int complete, int partial, int unknown, int unrecoverable, int unclassified) {}
 }

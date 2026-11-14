@@ -613,12 +613,15 @@ paths:
   /api/sources:
     get:
       operationId: listSources
-      summary: List licensed sources and their permission status
+      summary: List sources the caller may display, with their permission status
       security:
         - sessionCookie: []
       responses:
         '200':
-          description: Licensed sources in code order.
+          description: >-
+            Sources in code order, restricted to those whose DISPLAY capability is
+            currently granted. A source without that grant is omitted rather than
+            reported as forbidden, because the caller is not entitled to learn it exists.
           content:
             application/json:
               schema:
@@ -642,6 +645,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CoverageFactListResult'
+        '403':
+          description: >-
+            The DISPLAY capability is not granted for this source, or the licence is
+            revoked, expired, or outside its validity window. The grant is re-checked on
+            every read, not only when the source was scheduled.
   /api/sources/{code}/collect:
     post:
       operationId: collectSource
@@ -681,7 +689,17 @@ paths:
               schema:
                 $ref: '#/components/schemas/CollectSourceResult'
         '403':
-          description: The source permission is revoked, expired, or outside its validity window.
+          description: >-
+            A required capability is not granted for this source. ACCESS is checked before
+            the run starts, and STORE_RAW, STORE_NORMALIZED and ANALYZE are re-checked on
+            every page immediately before that page is written, so a licence withdrawn
+            mid-run stops the next page rather than letting it be persisted. Also returned
+            when the permission is revoked, expired, or outside its validity window.
+        '409':
+          description: >-
+            Another worker still holds a valid lease on the source, the lease claim lost a
+            compare-and-set race, or this run's fencing token or lease owner no longer
+            matches the source row, in which case the page commit is rejected.
 components:
   parameters:
     GroupId:
