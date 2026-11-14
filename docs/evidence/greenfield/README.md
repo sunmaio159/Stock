@@ -447,12 +447,16 @@ PARSE jobs, and worker recovery after a missed queue notification.
 - `aquila-server/.../sourcepolicy/SourcePolicy.java`, `Permission.java` — fail-closed
   status and validity-window checks over `m3_source_config`; an unconfigured, revoked,
   expired, or out-of-window source is rejected.
-  **Correction (C2):** the six permissions are **not** checked individually — the
+  **Correction (C2) — partly superseded by commit `c113601`; see §Fix round and
+  §Status.** As originally raised: the six permissions are **not** checked
+  individually — the
   `permission` argument is used only for the null guard, `m3_source_config` has a single
   `permission_status` column, `permits()` has no call sites, and the display endpoints
   (`/api/sources`, `/api/sources/{code}/coverage`) consult no policy at all. 统一方案 §8.1
   requires per-permission checks and a re-check before display/export. The exception path
   itself is fail-closed (only `EmptyResultDataAccessException` becomes 403).
+  **Now:** the six `perm_*` columns exist and are checked per capability, and the display
+  path re-checks; the write path still does not (round-2 finding F-1), so C2 remains open.
 - `aquila-server/.../crawl/SourceAdapter.java`, `FixtureSourceAdapter.java`,
   `FixtureSourcePlan.java`, `SourceFetchRequest.java`, `SourcePage.java`,
   `RawRecord.java` — versioned adapter contract; fetch/parse happen outside
@@ -463,14 +467,17 @@ PARSE jobs, and worker recovery after a missed queue notification.
   COMPLETE only when every page succeeded, terminated, and the source can prove
   completeness. A recent-N / untraceable source is explicitly prevented from
   COMPLETE (it stays UNKNOWN).
-  **Correction (I1):** that sentence describes the intent, not the implementation. The
-  verdict is exclusion-based: it never requires a terminal page, never requires
-  non-null terminal evidence, and never checks cursor continuity. An unrecognised
-  status is counted in `total` but in no category and therefore still resolves to
+  **Correction (I1) — superseded in intent, still open in substance; see §Fix round.
+  The past tense is deliberate: what follows describes `ceae6fb`.** That sentence described
+  the intent, not the implementation. The
+  verdict was exclusion-based: it never required a terminal page, never required
+  non-null terminal evidence, and never checked cursor continuity. An unrecognised
+  status was counted in `total` but in no category and therefore still resolved to
   COMPLETE (currently unreachable only because the DB `chk_m3_coverage_status` CHECK
-  rejects unknown literals — the guard is the schema, not the code). Successful
-  non-terminal pages are labelled COMPLETE at page level, and the collection loop can
-  exit with `cursor == null` while `terminal == false` and still mark the run COMPLETE.
+  rejected unknown literals — the guard was the schema, not the code).
+  `c113601` made the verdict proof-based, but the proof is not anchored to the last
+  page or the interval start, so I1 is not closed (round-2 finding F-2). Successful
+  non-terminal pages are still labelled COMPLETE at page level.
 - `aquila-server/.../crawl/CrawlApplicationService.java` — collection commit
   protocol: a short transaction claims the source lease, issues a fencing token and
   a unique run; pages are fetched/parsed outside transactions; each page commits
@@ -478,22 +485,26 @@ PARSE jobs, and worker recovery after a missed queue notification.
   expected cursor version and fencing token), and its coverage fact. A failing page
   keeps the interval `PARTIAL` and does not advance the cursor; a repeated run key is
   idempotent.
-  **Correction (C1):** the page-commit CAS is a tautology. `fencing_token` is read back
-  from the same `m3_source_config` row the transaction already locks and is then used as
-  its own `WHERE` condition, so it never compares against the token issued to the run
+  **Correction (C1) — CLOSED by `c113601`, confirmed by the round-2 review; the
+  description below is the `ceae6fb` state, kept as history.** The page-commit CAS was
+  a tautology. `fencing_token` was read back
+  from the same `m3_source_config` row the transaction already locks and was then used as
+  its own `WHERE` condition, so it never compared against the token issued to the run
   (`m3_task_instance.fencing_token`) or against `lease_owner`; a stale owner whose lease
-  was taken over can still commit. `beginRun` additionally reads the lease with a
-  non-locking query and issues an unconditional `UPDATE`, so two concurrent workers can
+  was taken over could still commit. `beginRun` additionally read the lease with a
+  non-locking query and issued an unconditional `UPDATE`, so two concurrent workers could
   claim the same (non-monotonic) token. Also **I2**: after a raw upsert conflict the code
-  keeps the freshly generated `raw_record_id` instead of re-reading the persisted one,
-  so a job can reference a row that does not exist.
+  kept the freshly generated `raw_record_id` instead of re-reading the persisted one,
+  so a job could reference a row that did not exist. Both are fixed; the concurrent
+  `beginRun` claim race itself is still untested (round-2 finding F-5).
 - `aquila-server/.../crawl/ProcessingJobWorker.java`, `JobLease.java`,
   `JobOutcome.java` — scans durable PENDING jobs and processes them; claims with a
   lease and a monotonically increasing fencing token; an expired lease can be
   reclaimed by another worker and the stale owner can no longer commit.
-- `aquila-server/.../crawl/SourceController.java`, `SourceConfigDto.java`,
-  `CoverageFactDto.java` — operations API: list sources, list coverage facts,
-  trigger a fixture collection.
+- `aquila-server/.../crawl/SourceController.java`, `SourceReadService.java`,
+  `SourceConfigDto.java`, `CoverageFactDto.java` — operations API: list sources, list
+  coverage facts, trigger a fixture collection. (`SourceReadService.java` was added by
+  the fix round `c113601`; it is absent from `ceae6fb`.)
 - `aquila-server/src/main/resources/db/migration/V3__source_coverage_raw.sql` —
   `m3_source_config`, `m3_task_instance`, `m3_coverage_fact`, `m3_raw_record`,
   `m3_processing_job`, `m3_adapter_evidence`.
@@ -512,8 +523,10 @@ PARSE jobs, and worker recovery after a missed queue notification.
   notification is recovered by the worker; a repeated run with the same interval is
   idempotent; an untraceable source never completes on crawl.
 
-Added in the fix round, each observed red against `ceae6fb` before the
-corresponding production change (see §Fix round below):
+Added in the fix round, each observed red before the corresponding production
+change, against the round-1 production logic with the new `V3` grants, the
+updated `CrawlFixture` and the stubbed read seam already in place — see
+§Fix round for why the baseline cannot literally be `ceae6fb`:
 
 - `CrawlStaleLeaseIntegrationTest` — a lease taken over mid-run makes the page
   commit conflict, and the cursor, raw and coverage rows are left untouched.
@@ -544,12 +557,14 @@ found and fixed during this run are recorded in §Status below. The full backend
 suite, frontend typecheck/build, OpenAPI lint, `mvn package`, and same-origin jar
 check were also run and pass, mirroring the Stage B closure order.
 
-**Those green results are not acceptance evidence for the four blocking findings.**
-No test exercises a stale-lease page commit, no test calls the existing-but-unused
-`CrawlFixture.insertRevokedSource`, the fixture always emits `terminal ⇔ nextCursor == null`,
-and `CoverageServiceTest` feeds `terminal/traceable/outcome` straight into `decidePageStatus`
-without traversing the adapter or the transaction. Falsifying cases are listed in the review
-report and must be written first (red) when the fixes land.
+**Those green results were not acceptance evidence for the four blocking findings.**
+At the time no test exercised a stale-lease page commit, none called the
+then-unused `CrawlFixture.insertRevokedSource`, the fixture always emitted
+`terminal ⇔ nextCursor == null`, and `CoverageServiceTest` fed
+`terminal/traceable/outcome` straight into `decidePageStatus` without traversing the
+adapter or the transaction. Falsifying cases were written first (red) in the fix
+round — see §Fix round — but two of the seven required cases are still missing and
+the placement of the permission checks remains untested (round-2 finding F-5).
 
 ### Fix round — falsifying tests first (2026-11-14, review round 2)
 
@@ -573,7 +588,17 @@ credentials injected into the command session only, never echoed or persisted):
    "Successfully applied 3 migrations … now at version v3".
 
 Red runs, each observed and read back from the surefire report before the
-production change:
+production change. **Baseline correction (round-2 finding F-7):** these were
+*not* run on `ceae6fb` itself. `CrawlFixture` now writes the six `perm_*`
+columns, which do not exist in `ceae6fb`'s V3, so a literal checkout of that
+commit would fail with `Unknown column 'perm_access'` instead of producing the
+assertion failures below. The actual red baseline was the new V3 + updated
+fixture + stubbed `SourceReadService` + round-1 production logic, reached by
+reverting only the three production files. The surefire XML lived under
+`target/` and was removed by `mvn clean`, so reproduce it with:
+`git checkout 1d2727c -- aquila-server/src/main/java/com/aquila/crawl/CrawlApplicationService.java aquila-server/src/main/java/com/aquila/crawl/CoverageService.java aquila-server/src/main/java/com/aquila/sourcepolicy/SourcePolicy.java` then
+`mvn -Pmysql-it -Dtest=CrawlStaleLeaseIntegrationTest,CoverageCompletenessProofTest,RawReferenceIntegrityIntegrationTest test`,
+then restore.
 
 | Test class | Red result | Observed failure | Finding |
 |---|---|---|---|
@@ -591,13 +616,20 @@ Green after the fixes:
 - `CoverageService.computeOverall` demands positive proof (a terminal page carrying
   non-null terminal evidence, plus an unbroken cursor chain) and routes any
   unrecognised status to `UNKNOWN` instead of the complete branch.
+  **Round-2 finding F-2: the predicate is not yet anchored to the last page or to
+  the interval start, so a fabricated COMPLETE is still constructible — I1 is not
+  closed.**
 - The raw upsert re-reads the persisted `raw_record_id` by dedup key on conflict, so
   a durable job can never reference a raw row that was not written.
-- `SourcePolicy` verifies the specific grant for each permission; `runCollection`
-  re-checks `STORE_RAW`, `STORE_NORMALIZED` and `ANALYZE`; the new
+- `SourcePolicy` verifies the specific grant for each permission; the new
   `SourceReadService` owns the display path and re-checks `DISPLAY` per source
-  (`/api/sources` filters, `/api/coverage` refuses without the grant), with
-  `SourceController` delegating to it.
+  (`/api/sources` filters per source, `/api/sources/{code}/coverage` refuses
+  without the grant), with `SourceController` delegating to it.
+- `runCollection` requests `STORE_RAW`, `STORE_NORMALIZED` and `ANALYZE`, but all
+  four `policy.require` calls sit **before** the page loop. **Round-2 finding F-1:
+  the write path in `commitPage` re-checks nothing, so §8.1's "not only at
+  scheduling time" is still unmet and C2 is not closed.** The comment at
+  `CrawlApplicationService` L66-67 claims otherwise and is itself false.
 
 Verification after the fix round, re-run from a clean `target/`:
 
@@ -625,13 +657,34 @@ and the required test additions are in
 `ACCEPTED / CLOSED / PASSED` markers originally written for this task were
 pre-filled and false, and were corrected to this state first.
 
-**Round 2: C1, C2, I1 and I2 are implemented and verified as recorded above, but
-`C-T1-01` deliberately remains `CHANGES_REQUIRED`.** It will be moved only by the
-outcome of a second independent review of the fix commit — never ahead of it.
+**Round 2 (fix commit `c113601`) was independently reviewed and is also
+`CHANGES_REQUIRED`, so `C-T1-01` remains open.** The review confirmed C1 and I2 closed,
+and verified the recorded numbers, asset hashes and the absence of pre-filled closure
+markers as accurate. It found, and I confirmed by direct inspection, that:
+
+- **F-1 (Critical)** C2 is only half implemented — all four `policy.require` calls sit
+  before the page loop, so `commitPage` writes raw, jobs, evidence and the coverage
+  fact with no re-check; §8.1's "not only at scheduling time" is unmet, and the code
+  comment claiming otherwise is false. No existing test can detect the placement.
+- **F-2** the new completeness proof is unsound: the terminal page need not be the last
+  row and the cursor chain is not anchored to the interval start, so a fabricated
+  COMPLETE is constructible through the public `commitPage`.
+- **F-5** 2 of the 7 falsifying cases demanded by round-1 precondition 1 are missing
+  (#4 unknown status, #7 evidence rows written and counted), the permission tests stop
+  at the service layer, and the concurrent `beginRun` claim race is not exercised.
+- **F-3 / F-4 / F-7** the README contradicted itself, `openapi.yaml` was never synced
+  with the semantics this round changed, and the "red against `ceae6fb`" wording was
+  imprecise (corrected above).
+
+Full findings with my verification status:
+`.superpowers/sdd/2026-11-09-zero-based-stage-c/task-1-review-report-round2.md`; review
+package `review-1d2727c..c113601.diff`.
+
 Still open and not decided by the implementer: I3–I8 and their Task 1 / Task 2
-attribution, the `m3_processing_job` versus `m4_processing_job` naming deviation,
-and M-C1 (`docs/api/openapi.yaml` lacks the `/collect` 409 response and the
-coverage paging upper bound).
+attribution (round-1 precondition 2 — the owner's decision has not been issued), the
+`m3_processing_job` versus `m4_processing_job` naming deviation, and the OpenAPI gaps,
+which now also include the coverage 403 and the two new 409 sources introduced by
+`c113601`, not only the `/collect` 409 and coverage paging bounds recorded under M-C1.
 
 Earlier in the same day a first review round and the owner's fixes addressed: a blocking
 compile error in `SourcePolicy` (`query` → `queryForObject`, which also made the
