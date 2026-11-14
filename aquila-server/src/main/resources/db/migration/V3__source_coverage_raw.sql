@@ -6,6 +6,14 @@ CREATE TABLE m3_source_config (
     source_name               VARCHAR(128) NOT NULL,
     permission_version        INT          NOT NULL DEFAULT 1,
     permission_status         VARCHAR(16)  NOT NULL,
+    -- Per-capability grants (统一方案 §8.1): each of the six permissions is checked
+    -- individually at its point of use; permission_status only gates the whole source.
+    perm_access               BOOLEAN      NOT NULL DEFAULT FALSE,
+    perm_store_raw            BOOLEAN      NOT NULL DEFAULT FALSE,
+    perm_store_normalized     BOOLEAN      NOT NULL DEFAULT FALSE,
+    perm_analyze              BOOLEAN      NOT NULL DEFAULT FALSE,
+    perm_display              BOOLEAN      NOT NULL DEFAULT FALSE,
+    perm_export               BOOLEAN      NOT NULL DEFAULT FALSE,
     valid_from                DATETIME(6)  NOT NULL,
     valid_to                  DATETIME(6)  NULL,
     rate_limit                INT          NOT NULL DEFAULT 0,

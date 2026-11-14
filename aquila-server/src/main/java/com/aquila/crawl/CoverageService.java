@@ -2,6 +2,7 @@ package com.aquila.crawl;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -54,28 +55,34 @@ public class CoverageService {
 
     public CoverageState computeOverall(String runId) {
         List<CoverageRow> rows = jdbc.query("""
-                SELECT coverage_status, COUNT(*) AS c
-                FROM m3_coverage_fact WHERE run_id = ? GROUP BY coverage_status
+                SELECT coverage_status, cursor_before, cursor_after, evidence_reference
+                FROM m3_coverage_fact WHERE run_id = ? ORDER BY page_index
                 """, (resultSet, rowNumber) -> new CoverageRow(
                         resultSet.getString("coverage_status"),
-                        resultSet.getInt("c")), runId);
-        int total = 0;
+                        resultSet.getString("cursor_before"),
+                        resultSet.getString("cursor_after"),
+                        resultSet.getString("evidence_reference")), runId);
+        int total = rows.size();
         int complete = 0;
         int partial = 0;
         int unknown = 0;
         int unrecoverable = 0;
+        int unclassified = 0;
         for (CoverageRow row : rows) {
-            total += row.count();
             switch (row.status()) {
-                case "COMPLETE" -> complete += row.count();
-                case "PARTIAL" -> partial += row.count();
-                case "UNKNOWN" -> unknown += row.count();
-                case "UNRECOVERABLE" -> unrecoverable += row.count();
-                default -> { }
+                case "COMPLETE" -> complete++;
+                case "PARTIAL" -> partial++;
+                case "UNKNOWN" -> unknown++;
+                case "UNRECOVERABLE" -> unrecoverable++;
+                // An unrecognised status is never allowed to reach the positive branch,
+                // even if the storage constraint that currently prevents it is relaxed.
+                default -> unclassified++;
             }
         }
         String overall;
         if (total == 0) {
+            overall = "UNKNOWN";
+        } else if (unclassified > 0) {
             overall = "UNKNOWN";
         } else if (unrecoverable > 0) {
             overall = "UNRECOVERABLE";
@@ -83,11 +90,35 @@ public class CoverageService {
             overall = "UNKNOWN";
         } else if (partial > 0) {
             overall = "PARTIAL";
+        } else if (!terminalPageProved(rows) || !cursorChainIsContinuous(rows)) {
+            // Completeness is proved, not inferred: the run must show a terminal page with
+            // non-null terminal evidence and an unbroken cursor chain across that proof.
+            overall = "UNKNOWN";
         } else {
             overall = "COMPLETE";
         }
         return new CoverageState(
                 runId, overall, total, complete, partial, unknown, unrecoverable, Instant.now());
+    }
+
+    private static boolean terminalPageProved(List<CoverageRow> rows) {
+        for (CoverageRow row : rows) {
+            if ("COMPLETE".equals(row.status())
+                    && row.cursorAfter() == null
+                    && row.evidenceReference() != null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean cursorChainIsContinuous(List<CoverageRow> rows) {
+        for (int index = 1; index < rows.size(); index++) {
+            if (!Objects.equals(rows.get(index - 1).cursorAfter(), rows.get(index).cursorBefore())) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private String decidePageStatus(PageCommit commit) {
@@ -120,5 +151,6 @@ public class CoverageService {
         };
     }
 
-    private record CoverageRow(String status, int count) {}
+    private record CoverageRow(
+            String status, String cursorBefore, String cursorAfter, String evidenceReference) {}
 }

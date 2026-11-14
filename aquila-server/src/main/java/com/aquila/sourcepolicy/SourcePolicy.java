@@ -10,8 +10,10 @@ import org.springframework.stereotype.Service;
 
 /**
  * Single point that validates licensed-source permissions and their validity window
- * before any source-aware operation. All checks fail closed: an unconfigured,
- * revoked, expired, or out-of-window source is rejected instead of silently allowed.
+ * before any source-aware operation. Each of the six capabilities is granted and checked
+ * separately (统一方案 §8.1). All checks fail closed: an unconfigured, revoked, expired,
+ * out-of-window source, or one that does not carry the requested grant, is rejected rather
+ * than silently allowed.
  */
 @Service
 @ConditionalOnProperty(name = "aquila.database.enabled", havingValue = "true")
@@ -32,12 +34,20 @@ public class SourcePolicy {
         try {
             row = jdbc.queryForObject(
                     """
-                    SELECT permission_status, valid_from, valid_to,
+                    SELECT permission_status, perm_access, perm_store_raw, perm_store_normalized,
+                           perm_analyze, perm_display, perm_export,
+                           valid_from, valid_to,
                            permission_version, license_version, adapter_contract_version
                     FROM m3_source_config WHERE source_code = ?
                     """,
                     (resultSet, rowNumber) -> new SourceConfigRow(
                             resultSet.getString("permission_status"),
+                            resultSet.getBoolean("perm_access"),
+                            resultSet.getBoolean("perm_store_raw"),
+                            resultSet.getBoolean("perm_store_normalized"),
+                            resultSet.getBoolean("perm_analyze"),
+                            resultSet.getBoolean("perm_display"),
+                            resultSet.getBoolean("perm_export"),
                             resultSet.getTimestamp("valid_from").toInstant(),
                             resultSet.getTimestamp("valid_to") == null
                                     ? null : resultSet.getTimestamp("valid_to").toInstant(),
@@ -56,6 +66,12 @@ public class SourcePolicy {
                 || (row.validTo() != null && !now.isBefore(row.validTo()))) {
             throw new ApiException(HttpStatus.FORBIDDEN, "Source permission is outside its validity window");
         }
+        // 统一方案 §8.1: each capability is granted separately, so an ACTIVE source that
+        // lacks this specific grant must still be refused for this operation.
+        if (!row.grants(permission)) {
+            throw new ApiException(HttpStatus.FORBIDDEN,
+                    "Source does not grant " + permission);
+        }
         return new SourcePermissionDecision(
                 sourceCode, row.permissionVersion(), row.licenseVersion(), row.adapterContractVersion());
     }
@@ -71,8 +87,23 @@ public class SourcePolicy {
     }
 
     public record SourceConfigRow(
-            String status, Instant validFrom, Instant validTo,
-            int permissionVersion, int licenseVersion, String adapterContractVersion) {}
+            String status,
+            boolean permAccess, boolean permStoreRaw, boolean permStoreNormalized,
+            boolean permAnalyze, boolean permDisplay, boolean permExport,
+            Instant validFrom, Instant validTo,
+            int permissionVersion, int licenseVersion, String adapterContractVersion) {
+
+        boolean grants(Permission permission) {
+            return switch (permission) {
+                case ACCESS -> permAccess;
+                case STORE_RAW -> permStoreRaw;
+                case STORE_NORMALIZED -> permStoreNormalized;
+                case ANALYZE -> permAnalyze;
+                case DISPLAY -> permDisplay;
+                case EXPORT -> permExport;
+            };
+        }
+    }
 
     public record SourcePermissionDecision(
             String sourceCode, int permissionVersion, int licenseVersion,

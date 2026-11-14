@@ -210,8 +210,11 @@ statements scoped to that schema. No other schema was inspected, connected to
 or written; no `SHOW DATABASES` and no old-database query. Administrative
 credentials were read from the process environment and never printed, logged
 or written to a tracked file. Generated scoped credentials and the 32-byte
-Base64 `STOCK_TOTP_ENCRYPTION_KEY` live only in the git-ignored
-`aquila-server/target/provision/env.ps1`.
+Base64 `STOCK_TOTP_ENCRYPTION_KEY` were written only to the git-ignored
+`aquila-server/target/provision/env.ps1`. **Correction 2026-11-14:** that path is
+Maven build output and was removed by `mvn clean` during the Stage C Task 1 fix
+round; the values now survive only in the git-ignored root `.env`, which had been
+mirrored from it.
 
 | Check | Result |
 |---|---|
@@ -392,11 +395,15 @@ Closes the residual boundary above. Performed under owner authorisation: the own
 supplied the administrative credentials in the implementation conversation and
 requested the rerun. Credentials were injected into the command session
 environment only — never echoed, logged, or written to any tracked or untracked
-file; the one-shot helpers live under the git-ignored `aquila-server/target/provision/`
-(`recreate-greenfield.ps1`, `RecreateGreenfield.java`, `run-mvn.ps1`; all three
-were one-shot helpers and have been deleted after the rerun completed — only the
-pre-existing `env.ps1` and `ProvisionGreenfield.java` remain under
-`target/provision/`). Only
+file; the one-shot helpers lived under the git-ignored
+`aquila-server/target/provision/` (`recreate-greenfield.ps1`,
+`RecreateGreenfield.java`, `run-mvn.ps1`) and were deleted after the rerun
+completed. **Correction 2026-11-14:** the sentence "only the pre-existing
+`env.ps1` and `ProvisionGreenfield.java` remain" is no longer true — a later
+`mvn clean` in the Stage C Task 1 fix round removed the whole directory, since it
+is Maven build output. The same three helpers were recreated for the Stage C
+rerun and deleted again; nothing under `target/` is closure evidence.
+Only
 `stock_greenfield_20261109` was dropped and recreated; no other schema was
 touched, and no `SHOW DATABASES` or old-database query was issued. The existing
 `aquila_migrate` / `aquila_runtime` scoped accounts and their grants were
@@ -505,6 +512,19 @@ PARSE jobs, and worker recovery after a missed queue notification.
   notification is recovered by the worker; a repeated run with the same interval is
   idempotent; an untraceable source never completes on crawl.
 
+Added in the fix round, each observed red against `ceae6fb` before the
+corresponding production change (see §Fix round below):
+
+- `CrawlStaleLeaseIntegrationTest` — a lease taken over mid-run makes the page
+  commit conflict, and the cursor, raw and coverage rows are left untouched.
+- `CoverageCompletenessProofTest` — pages without a terminal page, or with a broken
+  cursor chain, are not COMPLETE; a continuous run ending in terminal evidence is.
+- `RawReferenceIntegrityIntegrationTest` — after a duplicate-key raw upsert no
+  durable job points at a raw row that was never persisted.
+- `SourcePermissionMatrixIntegrationTest` — each of the six permissions is granted
+  and refused independently; revoked and unconfigured sources fail closed; the
+  display and collection paths re-check at the point of use.
+
 ### Verification (owner, on the isolated `stock_greenfield_20261109` target)
 
 The IT suite is gated by `mysql.it=true` plus the scoped `STOCK_MYSQL_IT_*`
@@ -531,14 +551,87 @@ and `CoverageServiceTest` feeds `terminal/traceable/outcome` straight into `deci
 without traversing the adapter or the transaction. Falsifying cases are listed in the review
 report and must be written first (red) when the fixes land.
 
+### Fix round — falsifying tests first (2026-11-14, review round 2)
+
+Two owner decisions governed this round before any code was written: C2 would be
+fixed by adding the six per-capability grants **in place to
+`V3__source_coverage_raw.sql`** and dropping and recreating the isolated schema —
+not by consuming the V4 migration assigned to Task 2 — and every fix would be
+preceded by a red test.
+
+DDL: `m3_source_config` now carries `perm_access`, `perm_store_raw`,
+`perm_store_normalized`, `perm_analyze`, `perm_display`, `perm_export`
+(`BOOLEAN NOT NULL DEFAULT FALSE`), so a capability must be granted explicitly and
+a row that does not state it fails closed. Editing V3 changed its checksum, so the
+isolated schema was dropped and recreated (owner-supplied administrative
+credentials injected into the command session only, never echoed or persisted):
+
+1. `mvn -Pmysql-it -Dtest=FlywayMySqlIntegrationTest test` on the empty schema →
+   **1 / 0 / 0 / 0, BUILD SUCCESS** — the empty-schema gate still holds before any
+   Stage C code runs.
+2. `mvn -Pmysql-it '-Dtest=!FlywayMySqlIntegrationTest' test` → Flyway logged
+   "Successfully applied 3 migrations … now at version v3".
+
+Red runs, each observed and read back from the surefire report before the
+production change:
+
+| Test class | Red result | Observed failure | Finding |
+|---|---|---|---|
+| `CrawlStaleLeaseIntegrationTest` | 1 test / 1 failure | `Expecting code to raise a throwable` — the stale run committed its page | C1 |
+| `CoverageCompletenessProofTest` | 3 tests / 2 failures | `"COMPLETE" not to be equal to` for a missing terminal page and for a broken cursor chain | I1 |
+| `RawReferenceIntegrityIntegrationTest` | 1 test / 1 failure | `expected: 0 but was: 2` dangling durable jobs after a duplicate-key raw upsert | I2 |
+| `SourcePermissionMatrixIntegrationTest` | 6 tests / 3 failures + 1 error | `withheld permission STORE_RAW on ONLY-ACCESS: Expecting value to be false but was true`; `Expecting code to raise a throwable`; `UnsupportedOperationException` from the deliberately stubbed read seam | C2 |
+
+Green after the fixes:
+
+- `beginRun` reads the lease under `FOR UPDATE`, claims it with a monotonic fencing
+  token through a conditional `UPDATE … WHERE fencing_token = ?`, and the page
+  commit CASes on the token **and** owner issued to that run — a takeover now
+  conflicts instead of committing silently.
+- `CoverageService.computeOverall` demands positive proof (a terminal page carrying
+  non-null terminal evidence, plus an unbroken cursor chain) and routes any
+  unrecognised status to `UNKNOWN` instead of the complete branch.
+- The raw upsert re-reads the persisted `raw_record_id` by dedup key on conflict, so
+  a durable job can never reference a raw row that was not written.
+- `SourcePolicy` verifies the specific grant for each permission; `runCollection`
+  re-checks `STORE_RAW`, `STORE_NORMALIZED` and `ANALYZE`; the new
+  `SourceReadService` owns the display path and re-checks `DISPLAY` per source
+  (`/api/sources` filters, `/api/coverage` refuses without the grant), with
+  `SourceController` delegating to it.
+
+Verification after the fix round, re-run from a clean `target/`:
+
+- full backend suite `mvn -Pmysql-it '-Dtest=!FlywayMySqlIntegrationTest' test` →
+  **134 / 0 / 0 / 0, BUILD SUCCESS** (123 before the round plus the 11 new tests);
+  the six crawl classes together account for 21 of them.
+- frontend `typecheck` (vue-tsc, silent success), `test` (`vitest` **5 / 5**, 2
+  files), `build` (`vite build`, 44 modules) and `openapi:lint` (`redocly`,
+  "Your API description is valid") all pass.
+- `mvn clean package -DskipTests` → BUILD SUCCESS, and `jar tf` shows exactly
+  `BOOT-INF/classes/static/index.html` with `assets/index--bfHftHD.js` and
+  `assets/index-DZaAL6_G.css` — the same hashes `vite build` had just emitted, so
+  the jar is same-origin with the current frontend. A non-clean `package` had also
+  carried three stale chunks from earlier builds, which is why the clean run is the
+  recorded evidence.
+
 ### Status
 
-**`CHANGES_REQUIRED` — not closed.** An independent two-phase review of `ceae6fb` raised
-2 Critical (C1 tautological page-commit fencing/CAS; C2 six permissions not checked
-individually and not re-checked on the display path) and 8 Important findings, all
-confirmed by direct code inspection. Closure preconditions and the required test additions
-are in `.superpowers/sdd/2026-11-09-zero-based-stage-c/task-1-review-report.md`; the
-register row `C-T1-01` is set to `CHANGES_REQUIRED` accordingly.
+**Round 1, review of `ceae6fb`: `CHANGES_REQUIRED`.** An independent two-phase
+review raised 2 Critical (C1 tautological page-commit fencing/CAS; C2 six
+permissions not checked individually and not re-checked on the display path) and 8
+Important findings, all confirmed by direct code inspection. Closure preconditions
+and the required test additions are in
+`.superpowers/sdd/2026-11-09-zero-based-stage-c/task-1-review-report.md`. The
+`ACCEPTED / CLOSED / PASSED` markers originally written for this task were
+pre-filled and false, and were corrected to this state first.
+
+**Round 2: C1, C2, I1 and I2 are implemented and verified as recorded above, but
+`C-T1-01` deliberately remains `CHANGES_REQUIRED`.** It will be moved only by the
+outcome of a second independent review of the fix commit — never ahead of it.
+Still open and not decided by the implementer: I3–I8 and their Task 1 / Task 2
+attribution, the `m3_processing_job` versus `m4_processing_job` naming deviation,
+and M-C1 (`docs/api/openapi.yaml` lacks the `/collect` 409 response and the
+coverage paging upper bound).
 
 Earlier in the same day a first review round and the owner's fixes addressed: a blocking
 compile error in `SourcePolicy` (`query` → `queryForObject`, which also made the
@@ -584,8 +677,9 @@ mvn -f aquila-server/pom.xml -Pmysql-it \
 Credentials follow the project policy: the **runtime** account is `aquila_runtime`
 (SELECT/INSERT/UPDATE/DELETE only, no DDL) and the **Flyway** account is
 `aquila_migrate` (DDL + DML) — distinct accounts satisfy
-`FlywayMigrationTargetPolicy`. The local `.env` mirrors the canonical scoped env
-`aquila-server/target/provision/env.ps1` (see §15).
+`FlywayMigrationTargetPolicy`. The local `.env` mirrored the then-present scoped
+env file `aquila-server/target/provision/env.ps1` (see §15 and its correction
+note: that file no longer exists, `.env` is the only local copy).
 
 Result: **PASS** — `Tests run: 10, Failures: 0, Errors: 0, Skipped: 0`
 (`CoverageServiceTest` 4/4, `CrawlRecoveryIntegrationTest` 6/6). G02 (real
