@@ -301,6 +301,7 @@ owning stages. No item is unassigned; none is a Step 6 acceptance condition.
 - Flyway 10.20.1 warns that MySQL 8.4 exceeds its tested ceiling of 8.1 even
   though V1/V2 applied and validated. Owner decision pending on upgrading
   Flyway or using a tested 8.1 target.
+  **Resolved 2026-11-14** — see §Flyway / MySQL 8.4 compatibility resolution.
 - G02–G05 remain OPEN for stages C/D/E/F; they do not block this verdict.
 - `STOCK_DB_ENABLED` / `STOCK_FLYWAY_ENABLED` remain false for the application;
   the isolation schema is used only by the opt-in test profile.
@@ -348,9 +349,39 @@ First review: spec compliance ❌ (3 findings); code quality **Changes required*
 
 ### Remaining outside Task 2
 
-- Flyway 10.20.1 / MySQL 8.4 compatibility decision remains OPEN from Task 1.
+- Flyway / MySQL 8.4 compatibility was resolved on 2026-11-14 by pinning Flyway 11.20.3; the empty-schema gate must be re-run on a fresh schema before production enablement (see §Flyway / MySQL 8.4 compatibility resolution).
 - G02–G05 and candidate ranking remain OPEN; no eligible source coverage exists.
 - The 300 capacity ceiling and execution budget are not enabled. Raising the ceiling requires G03/G02 evidence and an owner decision via code change, not configuration.
 - Unrelated pre-existing edits and untracked documents under `落地文档设计/` were deliberately left unstaged; this commit stages only Stage B Task 2 reviewed paths.
 
 Confirmation: the owner asked to complete Task 5 (review fixes, commit and document marking) on 2026-11-14.
+
+## Flyway / MySQL 8.4 compatibility resolution — 2026-11-14
+
+Owner decision (2026-11-14): **empirically upgrade Flyway** rather than register an exemption or replace the MySQL target. All trials used `-Dflyway.version=...` from the command line against the owner-provisioned isolated MySQL 8.4 schema; no tracked file changed until a candidate passed, so every failed trial was an automatic rollback.
+
+### Version facts (Maven Central, 2026-11-14)
+
+- `spring-boot-starter-parent 3.4.5` manages Flyway **10.20.1** through the `flyway.version` BOM property; the server targets Java 17.
+- Highest available versions: **11.20.3** (11.x), **12.11.0** (12.x), **13.12.2** (13.x).
+- Flyway 13.x requires Java 21, so it is out of scope for this Java 17 project.
+
+### Controlled trials on real MySQL 8.4
+
+| Version | Result | Evidence |
+|---|---|---|
+| 10.20.1 (baseline control) | `AuthFlowIntegrationTest` 7/7 PASS, but logs `WARN Flyway upgrade recommended: MySQL 8.4 is newer than this version of Flyway and support has not been tested. The latest supported version of MySQL is 8.1.` | controlled re-run 2026-11-14 |
+| 12.11.0 | 7/7 ERROR, ApplicationContext fails with `NoSuchMethodError: org.flywaydb.core.api.configuration.FluentConfiguration.cleanOnValidationError(boolean)` raised by Spring Boot 3.4.5 `FlywayAutoConfiguration` | surefire report, superseded by later runs |
+| 11.20.3 | 7/7 PASS with **no version warning**; full `-Pmysql-it '-Dtest=!FlywayMySqlIntegrationTest' test` **113/113 PASS** with no version warning | 2026-11-14 runs |
+
+### Resolution and verification
+
+`aquila-server/pom.xml` now pins `<flyway.version>11.20.3</flyway.version>` with an inline rationale for excluding 12.x and 13.x. Verified without any command-line override: `mvn help:evaluate -Dexpression=flyway.version` resolves to **11.20.3**; the full backend suite is **113/113 PASS** on real MySQL 8.4; `mvn -DskipTests package` and the same-origin jar (`BOOT-INF/classes/static/index.html`) pass. This also proves Flyway 11.20.3 can validate the `flyway_schema_history` written by 10.20.1 — V1/V2 checksums are unchanged and no applied migration was edited.
+
+The earlier "owner decision pending" notes in §MySQL 8 acceptance, §Stage B Task 1 closure and §Stage B Task 2 closure are historical records from 2026-11-13 and are superseded by this section.
+
+### Residual boundary
+
+- `FlywayMySqlIntegrationTest` (empty-schema gate) was **not** re-run under 11.20.3: it is mutually exclusive with the already-migrated isolated schema. A fresh empty schema must re-run that gate before production enablement or at the G03/G04 gate.
+- G02–G05 and candidate ranking remain OPEN; `STOCK_DB_ENABLED` / `STOCK_FLYWAY_ENABLED` remain false for the application, so this change does not enable production migrations.
+- Moving to Flyway 12.x would first require a Spring Boot upgrade beyond 3.4.5 (and 13.x additionally requires Java 21).

@@ -21,6 +21,12 @@
     <java.version>17</java.version>
     <maven.compiler.release>17</maven.compiler.release>
     <mysql.it>false</mysql.it>
+    <!-- Spring Boot 3.4.5 BOM pins Flyway 10.20.1, which warns that MySQL 8.4 is
+         untested (latest tested 8.1). 11.20.3 supports MySQL 8.4 and stays API
+         compatible with Boot 3.4.5; Flyway 12.x removes
+         FluentConfiguration.cleanOnValidationError used by that Boot release.
+         Flyway 13.x requires Java 21, above this project's Java 17 baseline. -->
+    <flyway.version>11.20.3</flyway.version>
   </properties>
 
   <dependencies>

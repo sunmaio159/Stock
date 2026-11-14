@@ -135,3 +135,5 @@ Run: `mvn -f aquila-server/pom.xml -Pmysql-it -Dtest=ImportIdempotencyTest,Watch
 Expected: PASS. Run full backend tests, frontend tests/build, and OpenAPI lint. Commit `feat: add securities and watchlists` with required trailer.
 
 Acceptance 2026-11-14: Step 5 command and full backend suite 113/113 PASS on real MySQL 8; frontend typecheck, vitest 5/5, OpenAPI lint, Vite build, `mvn package` and same-origin jar check PASS. Two-stage independent review closed 3 Critical and 9 Important findings with a clean re-review; dispositions recorded in `docs/evidence/greenfield/README.md` §Stage B Task 2 closure. Committed as `feat: add securities and watchlists` with the required Copilot co-author trailer.
+
+Stage B closure 2026-11-14: the Flyway / MySQL 8.4 compatibility caveat is resolved. The owner chose an empirical upgrade; Flyway 12.11.0 proved incompatible with Spring Boot 3.4.5, while 11.20.3 is now pinned in `aquila-server/pom.xml`. The full backend suite is 113/113 PASS on real MySQL 8.4 with no untested-version warning, verified without a command-line override. See `docs/evidence/greenfield/README.md` §Flyway / MySQL 8.4 compatibility resolution.
