@@ -633,7 +633,8 @@ Green after the fixes:
   unrecognised status to `UNKNOWN` instead of the complete branch.
   **Round-2 finding F-2: the predicate is not yet anchored to the last page or to
   the interval start, so a fabricated COMPLETE is still constructible — I1 is not
-  closed.** *(Closed in round 3, see below.)*
+  closed.** *(Addressed in round 3, pending review; the third review found the
+  anchoring still incomplete — see §Round 3 outcome, G-1.)*
 - The raw upsert re-reads the persisted `raw_record_id` by dedup key on conflict, so
   a durable job can never reference a raw row that was not written.
 - `SourcePolicy` verifies the specific grant for each permission; the new
@@ -645,7 +646,7 @@ Green after the fixes:
   the write path in `commitPage` re-checks nothing, so §8.1's "not only at
   scheduling time" is still unmet and C2 is not closed.** The comment at
   `CrawlApplicationService` L66-67 claims otherwise and is itself false.
-  *(Closed in round 3, see below.)*
+  *(Addressed in round 3, pending review.)*
 
 Verification after the fix round, re-run from a clean `target/`:
 
@@ -662,7 +663,7 @@ Verification after the fix round, re-run from a clean `target/`:
   carried three stale chunks from earlier builds, which is why the clean run is the
   recorded evidence.
 
-### Round 3 — closing F-1, F-2 and F-5 (2026-11-14, owner-approved scope)
+### Round 3 — addressing F-1, F-2 and F-5 (2026-11-14, owner-approved scope)
 
 Owner decisions recorded before this round: close all three items (F-1 + F-2 + F-5), implement
 F-1 as per-capability `policy.require` inside `commitPage` rather than folding
@@ -742,6 +743,56 @@ Verification after the round 3 changes:
 - `mvn clean package -DskipTests` → BUILD SUCCESS with exactly those two hashes plus
   `index.html` in `BOOT-INF/classes/static/`, so the jar remains same-origin.
 
+These counts precede the two tests recorded under §Round 3 outcome below, which are not
+yet part of any green run; 144 is the count as of commit `03edf36`, not as of the current
+working tree. The numbers above are also console observations only — `target/` is
+git-ignored and was emptied by the clean run, so no machine-readable surefire evidence is
+retained (third-round finding G-6).
+
+### Round 3 outcome — third independent review (2026-11-14)
+
+The third independent two-phase review of `0513bab..03edf36` returned **`CHANGES_REQUIRED`**.
+It confirmed F-1 closed, F-5 substantially closed, the contract sync accurate, that no
+existing assertion was deleted or weakened, and that the two test-data edits were
+honest corrections of unrealistic fixtures rather than accommodations of the fix. It then
+found, and I confirmed, that **F-2 was not actually closed**:
+
+- **G-1 (Important)** — the proof infers "this page ended the interval" from
+  `cursor_after IS NULL`, but `m3_coverage_fact` persists neither a `terminal` nor a
+  `traceable` flag, and `decidePageStatus` returns `COMPLETE` for any successful
+  non-terminal page. So a run whose last page was *not* reported terminal by the adapter is
+  still declared COMPLETE. Round-2 anchored the *position* (last row) and the *start* (first
+  row carries no cursor) but never anchored the *terminal evidence itself*. This is exactly
+  round-1 falsifying case 3, which had still never been written.
+  Reproduced as a red before any further production change, without DDL:
+  `CoverageVerdictClassificationTest.nonTerminalPageWithoutACursorCannotProveCompleteness`
+  and `…unbrokenChainEndingOnANonTerminalPageCannotProveCompleteness` →
+  `Tests run: 4, Failures: 2` with `Expecting actual: "COMPLETE" not to be equal to:
+  "COMPLETE"`.
+  Closing it needs the terminal fact persisted, which is a schema change, so the migration
+  path is an owner decision (edit `V3` in place again, which changes its checksum and
+  requires a fresh empty schema and the admin credential, or add `V4`). Making
+  non-terminal pages not `COMPLETE` at the page level instead would contradict §8.2.1, which
+  deliberately separates the page verdict from the run verdict, and is recorded as rejected
+  rather than silently chosen.
+- **G-2 (Important, mine)** — this document carried `*(Closed in round 3)*` markers and a
+  heading reading "closing F-1, F-2 and F-5", which is precisely the pre-filled closure the
+  first two rounds forbade, and was additionally false for F-2. Both are downgraded to
+  "addressed, pending review" here.
+- **G-3 (Minor)** — the failed-page path writes a `PARTIAL` coverage fact without passing
+  the write-point re-check. Not a §8.1 breach, because it stores no fetched content, but it
+  is the one write path deliberately outside the re-check and needs an explicit comment.
+- **G-4 (Minor)** — the concurrent-claim test is sequential; it guards the live-lease
+  refusal but not the simultaneous `FOR UPDATE` + CAS race that round-1 C1 root cause (b)
+  described.
+- **G-5 (Minor)** — `tally` is computed twice per call, and `SourcePolicy` still refers to
+  the Chinese document title in two comments (pre-existing, untouched this round).
+- **G-6 (Minor)** — recorded above: the green numbers are console-only.
+
+Full findings with my verification of each:
+`.superpowers/sdd/2026-11-09-zero-based-stage-c/task-1-review-report-round3.md`; review
+package `review-0513bab..03edf36.diff`.
+
 ### Status
 
 **Round 1, review of `ceae6fb`: `CHANGES_REQUIRED`.** An independent two-phase
@@ -777,11 +828,12 @@ Full findings with my verification status:
 package `review-1d2727c..c113601.diff`.
 
 Still open and not decided by the implementer: I3–I8 and their Task 1 / Task 2
-attribution (round-1 precondition 2 — the owner's decision has not been issued) and the
-`m3_processing_job` versus `m4_processing_job` naming deviation. F-1, F-2, F-5 and the
-OpenAPI gaps listed under F-4 were addressed in round 3 and are awaiting that round's
-independent review, so nothing here is recorded as closed on the implementer's own
-authority.
+attribution (round-1 precondition 2 — the owner's decision has not been issued), the
+`m3_processing_job` versus `m4_processing_job` naming deviation, and now the migration path
+for the terminal flag G-1 requires. F-1, F-5 and the OpenAPI gaps listed under F-4 were
+addressed in round 3 and confirmed by that round's review; **F-2 and I1 are not closed**,
+because the review found the completeness proof still infers the terminal page from an
+absent cursor. Nothing here is recorded as closed on the implementer's own authority.
 
 Earlier in the same day a first review round and the owner's fixes addressed: a blocking
 compile error in `SourcePolicy` (`query` → `queryForObject`, which also made the
