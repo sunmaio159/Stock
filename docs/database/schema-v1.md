@@ -55,7 +55,7 @@ data category, not an invented number of days.
 
 ## Migration boundaries
 
-- V1–V2 are owned by Stage B (V1 by Task 1, V2 by Task 2). **V3 is unused in Stage B**: the owner selected migration option A on 2026-11-11, so Stage B Task 2 creates a single `V2__masterdata_watchlist_schema.sql` containing all Stage B tables listed above. This removes the cross-migration foreign-key ordering problem between `m1_watchlist_item` and `m2_security`. V4–V6 are owned by Stage C; V7 by Stage D; V8 by Stages E–F as identified above.
+- V1–V2 are owned by Stage B (V1 by Task 1, V2 by Task 2). **V3 is unused in Stage B**: the owner selected migration option A on 2026-11-11, so Stage B Task 2 creates a single `V2__masterdata_watchlist_schema.sql` containing all Stage B tables listed above. This removes the cross-migration foreign-key ordering problem between `m1_watchlist_item` and `m2_security`. **V3 is introduced by Stage C Task 1** (`V3__source_coverage_raw.sql`), creating `m3_source_config`, `m3_task_instance`, `m3_coverage_fact`, `m3_raw_record`, `m3_processing_job`, and `m3_adapter_evidence`, and establishing the lease/fencing, cursor-CAS, coverage-fact, raw-dedup, and durable-job foundations. V4–V6 are owned by Stage C; V7 by Stage D; V8 by Stages E–F as identified above.
 - The option A selection is a migration-ownership correction recorded in `docs/evidence/greenfield/README.md`; it is not a product-scope change. No physical V3 migration exists in this stage.
 - No migration or DDL is created by Stage A. No historical DDL, database, or Flyway history is an input.
 - All business migrations target only the explicitly provisioned new schema

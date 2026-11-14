@@ -5,6 +5,7 @@ import SecuritySettingsView from '../views/SecuritySettingsView.vue';
 import WatchlistView from '../views/WatchlistView.vue';
 import HotlistView from '../views/HotlistView.vue';
 import ImportPreviewView from '../views/ImportPreviewView.vue';
+import SourceOperationsView from '../views/SourceOperationsView.vue';
 
 const Home = defineComponent({
   name: 'HomeView',
@@ -26,6 +27,12 @@ export const routeRecords: RouteRecordRaw[] = [
     path: '/import',
     name: 'import',
     component: ImportPreviewView,
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/sources',
+    name: 'sources',
+    component: SourceOperationsView,
     meta: { requiresAuth: true },
   },
 ];

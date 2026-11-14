@@ -610,6 +610,78 @@ paths:
                 $ref: '#/components/schemas/ImportCommitResult'
         '409':
           description: The batch is no longer in preview or capacity was reached.
+  /api/sources:
+    get:
+      operationId: listSources
+      summary: List licensed sources and their permission status
+      security:
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Licensed sources in code order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceConfigListResult'
+  /api/sources/{code}/coverage:
+    get:
+      operationId: listCoverageFacts
+      summary: List per-page coverage facts for a source
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Coverage facts in page order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CoverageFactListResult'
+  /api/sources/{code}/collect:
+    post:
+      operationId: collectSource
+      summary: Trigger a fixture collection run for a source (G02 gate pending)
+      security:
+        - csrfToken: []
+          sessionCookie: []
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: scope
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: start
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: The collection run and its aggregated coverage verdict.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CollectSourceResult'
+        '403':
+          description: The source permission is revoked, expired, or outside its validity window.
 components:
   parameters:
     GroupId:
@@ -1181,3 +1253,113 @@ components:
           type: string
           minLength: 1
           maxLength: 100
+    SourceConfigDto:
+      type: object
+      required: [sourceCode, sourceName, permissionStatus, validFrom]
+      properties:
+        sourceCode:
+          type: string
+        sourceName:
+          type: string
+        permissionStatus:
+          type: string
+          enum: [ACTIVE, REVOKED, EXPIRED]
+        validFrom:
+          type: string
+          format: date-time
+        validTo:
+          type: [string, 'null']
+          format: date-time
+    SourceConfigListResult:
+      type: object
+      required: [code, message, data, traceId]
+      properties:
+        code:
+          type: integer
+          const: 0
+        message:
+          type: string
+          const: OK
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceConfigDto'
+        traceId:
+          type: string
+          format: uuid
+    CoverageFactDto:
+      type: object
+      required: [pageIndex, status, observedAt]
+      properties:
+        pageIndex:
+          type: integer
+        intervalStart:
+          type: [string, 'null']
+          format: date-time
+        intervalEnd:
+          type: [string, 'null']
+          format: date-time
+        status:
+          type: string
+          enum: [COMPLETE, PARTIAL, UNKNOWN, UNRECOVERABLE]
+        reason:
+          type: [string, 'null']
+        evidenceReference:
+          type: [string, 'null']
+        observedAt:
+          type: string
+          format: date-time
+    CoverageFactListResult:
+      type: object
+      required: [code, message, data, traceId]
+      properties:
+        code:
+          type: integer
+          const: 0
+        message:
+          type: string
+          const: OK
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/CoverageFactDto'
+        traceId:
+          type: string
+          format: uuid
+    CoverageState:
+      type: object
+      required: [runId, overallStatus, pagesTotal, pagesComplete, pagesPartial, pagesUnknown, pagesUnrecoverable, observedAt]
+      properties:
+        runId:
+          type: string
+        overallStatus:
+          type: string
+          enum: [COMPLETE, PARTIAL, UNKNOWN, UNRECOVERABLE]
+        pagesTotal:
+          type: integer
+        pagesComplete:
+          type: integer
+        pagesPartial:
+          type: integer
+        pagesUnknown:
+          type: integer
+        pagesUnrecoverable:
+          type: integer
+        observedAt:
+          type: string
+          format: date-time
+    CrawlResult:
+      type: object
+      required: [runId, coverage]
+      properties:
+        runId:
+          type: string
+        coverage:
+          $ref: '#/components/schemas/CoverageState'
+    CollectSourceResult:
+      allOf:
+        - $ref: '#/components/schemas/AuthEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/CrawlResult'

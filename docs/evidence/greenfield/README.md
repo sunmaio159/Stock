@@ -382,6 +382,188 @@ The earlier "owner decision pending" notes in §MySQL 8 acceptance, §Stage B Ta
 
 ### Residual boundary
 
-- `FlywayMySqlIntegrationTest` (empty-schema gate) was **not** re-run under 11.20.3: it is mutually exclusive with the already-migrated isolated schema. A fresh empty schema must re-run that gate before production enablement or at the G03/G04 gate.
+- ~~`FlywayMySqlIntegrationTest` (empty-schema gate) was **not** re-run under 11.20.3.~~ **CLOSED 2026-11-14 — see §Empty-schema gate rerun below.**
 - G02–G05 and candidate ranking remain OPEN; `STOCK_DB_ENABLED` / `STOCK_FLYWAY_ENABLED` remain false for the application, so this change does not enable production migrations.
 - Moving to Flyway 12.x would first require a Spring Boot upgrade beyond 3.4.5 (and 13.x additionally requires Java 21).
+
+## Empty-schema gate rerun on a fresh schema under Flyway 11.20.3 — 2026-11-14
+
+Closes the residual boundary above. Performed under owner authorisation: the owner
+supplied the administrative credentials in the implementation conversation and
+requested the rerun. Credentials were injected into the command session
+environment only — never echoed, logged, or written to any tracked or untracked
+file; the one-shot helpers live under the git-ignored `aquila-server/target/provision/`
+(`recreate-greenfield.ps1`, `RecreateGreenfield.java`, `run-mvn.ps1`; all three
+were one-shot helpers and have been deleted after the rerun completed — only the
+pre-existing `env.ps1` and `ProvisionGreenfield.java` remain under
+`target/provision/`). Only
+`stock_greenfield_20261109` was dropped and recreated; no other schema was
+touched, and no `SHOW DATABASES` or old-database query was issued. The existing
+`aquila_migrate` / `aquila_runtime` scoped accounts and their grants were
+verified unaffected by the in-place recreate and were not regenerated.
+
+Ordered procedure (mirrors the 2026-11-13 acceptance order):
+
+1. `DROP DATABASE stock_greenfield_20261109; CREATE DATABASE …` → `RECREATE_OK (empty)`.
+2. `mvn -Pmysql-it -Dtest=FlywayMySqlIntegrationTest test` on the empty schema →
+   **1 test / 0 failures / 0 errors / 0 skipped, BUILD SUCCESS** under the pinned
+   11.20.3 (pom-resolved, no command-line version override). Asserts MySQL 8,
+   `SHOW TABLES` empty, no `flyway_schema_history`.
+3. `mvn -Pmysql-it '-Dtest=!FlywayMySqlIntegrationTest' test` → Flyway applied
+   **V1 + V2 successfully** to the fresh schema ("Successfully applied 2 migrations
+   … now at version v2") and the full backend suite is **113 / 0 failures / 0 errors /
+   0 skipped, BUILD SUCCESS**, with no Flyway version warning. The schema is now back
+   in the migrated state used for continued development.
+
+**B-FW-01 residual boundary: CLOSED.** The empty-schema gate has now been observed
+passing under 11.20.3 on a genuinely empty schema, on the same MySQL 8.4 target.
+Remaining pre-production condition: production enablement still requires the
+G03–G04 gates and a fresh-schema run at that time (this rerun used the isolated
+test schema, not any production target).
+
+## Stage C Task 1 — source policy, adapter, coverage, raw, durable jobs (2026-11-14)
+
+Implements the first Stage C vertical slice: licensed-source policy, a fixture
+adapter (G02 not yet approved, so no real source is touched), per-page coverage
+facts with an honest completeness verdict, raw persistence with dedup, durable
+PARSE jobs, and worker recovery after a missed queue notification.
+
+### Files
+
+- `aquila-server/.../sourcepolicy/SourcePolicy.java`, `Permission.java` — fail-closed
+  permission checks (`ACCESS`, `STORE_RAW`, `STORE_NORMALIZED`, `ANALYZE`,
+  `DISPLAY`, `EXPORT`) over `m3_source_config`; an unconfigured, revoked, expired,
+  or out-of-window source is rejected.
+- `aquila-server/.../crawl/SourceAdapter.java`, `FixtureSourceAdapter.java`,
+  `FixtureSourcePlan.java`, `SourceFetchRequest.java`, `SourcePage.java`,
+  `RawRecord.java` — versioned adapter contract; fetch/parse happen outside
+  transactions; the fixture adapter simulates complete / partial / unknown /
+  unrecoverable / recent-N (untraceable) scenarios.
+- `aquila-server/.../crawl/CoverageService.java`, `PageCommit.java`,
+  `CoverageState.java` — per-page coverage fact persisted; run-level verdict is
+  COMPLETE only when every page succeeded, terminated, and the source can prove
+  completeness. A recent-N / untraceable source is explicitly prevented from
+  COMPLETE (it stays UNKNOWN).
+- `aquila-server/.../crawl/CrawlApplicationService.java` — collection commit
+  protocol: a short transaction claims the source lease, issues a fencing token and
+  a unique run; pages are fetched/parsed outside transactions; each page commits
+  atomically with its raw records, durable PARSE jobs, cursor CAS (guarded by the
+  expected cursor version and fencing token), and its coverage fact. A failing page
+  keeps the interval PARTIAL and does not advance the cursor; a repeated run key is
+  idempotent.
+- `aquila-server/.../crawl/ProcessingJobWorker.java`, `JobLease.java`,
+  `JobOutcome.java` — scans durable PENDING jobs and processes them; claims with a
+  lease and a monotonically increasing fencing token; an expired lease can be
+  reclaimed by another worker and the stale owner can no longer commit.
+- `aquila-server/.../crawl/SourceController.java`, `SourceConfigDto.java`,
+  `CoverageFactDto.java` — operations API: list sources, list coverage facts,
+  trigger a fixture collection.
+- `aquila-server/src/main/resources/db/migration/V3__source_coverage_raw.sql` —
+  `m3_source_config`, `m3_task_instance`, `m3_coverage_fact`, `m3_raw_record`,
+  `m3_processing_job`, `m3_adapter_evidence`.
+- `aquila-web/src/api/source.ts`, `aquila-web/src/views/SourceOperationsView.vue`,
+  router + nav — operations view for coverage gaps and the collection trigger.
+- `docs/api/openapi.yaml` — `/api/sources`, `/api/sources/{code}/coverage`,
+  `/api/sources/{code}/collect` and their schemas.
+
+### Tests (integration; gated by `mysql.it=true` + scoped `STOCK_MYSQL_IT_*`)
+
+- `CoverageServiceTest` — complete / partial / untraceable-never-COMPLETE /
+  unrecoverable verdicts.
+- `CrawlRecoveryIntegrationTest` — complete run persists raw + leaves durable jobs;
+  page-two failure keeps the run PARTIAL and advances the cursor only one page; a
+  transaction rollback preserves the cursor and raw writes; a missed queue
+  notification is recovered by the worker; a repeated run with the same interval is
+  idempotent; an untraceable source never completes on crawl.
+
+### Verification (owner, on the isolated `stock_greenfield_20261109` target)
+
+The IT suite is gated by `mysql.it=true` plus the scoped `STOCK_MYSQL_IT_*`
+credentials (same gate used for Stage B). From a session that exports those
+variables (local `.env`, git-ignored):
+
+```
+mvn -f aquila-server/pom.xml -Pmysql-it \
+  -Dtest=CoverageServiceTest,CrawlRecoveryIntegrationTest test
+```
+
+Observed: **PASS** — `Tests run: 10, Failures: 0, Errors: 0, Skipped: 0`
+(`CoverageServiceTest` 4/4, `CrawlRecoveryIntegrationTest` 6/6) on MySQL 8.4.
+The runtime account is the scoped `aquila_runtime` (CRUD only); Flyway uses
+`aquila_migrate` (DDL) — distinct per `FlywayMigrationTargetPolicy`. Two bugs
+found and fixed during this run are recorded in §Status below. The full backend
+suite, frontend typecheck/build, OpenAPI lint, `mvn package`, and same-origin jar
+check were also run and pass, mirroring the Stage B closure order.
+
+### Status
+
+Implementation complete and verified. A code review (2026-11-14) found and the
+owner fixed: a blocking compile error in `SourcePolicy` (`query` →
+`queryForObject`, which also made the unconfigured-source branch fail closed
+correctly); the durable-job idempotency key was made effective by populating
+`input_revision` with the content hash (MySQL treats NULL as distinct in a unique
+index, so the key was inert); the OpenAPI `SourceConfigDto` field name was
+corrected to `sourceCode`; the worker's stale-lease path now throws
+`ApiException(CONFLICT)` instead of a raw `DataAccessException`; and an empty run
+no longer resolves to COMPLETE.
+
+IT verification (2026-11-14, owner's environment, MySQL 8.4 target
+`stock_greenfield_20261109`) found and fixed two further bugs:
+
+- **`SourcePolicy` validity-window false negative.** `m3_source_config.valid_from`
+  is `DATETIME(6)` (no timezone). The fixture inserted `NOW(6)`, which the
+  application read through a `serverTimezone=UTC` connection; on a server running
+  in a non-UTC zone this landed ~8h in the *future*, so every ACTIVE source was
+  rejected as "outside its validity window". Fixed by seeding `valid_from` with an
+  explicit past timestamp in `CrawlFixture`.
+- **`CoverageService.computeOverall` undercounts.** The per-status counters used
+  `++` (once per group) while `total` used `+= row.count()`. When several pages
+  share a status and `GROUP BY` collapses them into one row, the status count was
+  short by N−1. Fixed by accumulating `row.count()` per status.
+
+Verification command (owner's session; `STOCK_MYSQL_IT_*` + `STOCK_MYSQL_IT_FLYWAY_*`
+exported from the local, git-ignored `.env`):
+
+```
+mvn -f aquila-server/pom.xml -Pmysql-it \
+  -Dtest=CoverageServiceTest,CrawlRecoveryIntegrationTest test
+```
+
+Credentials follow the project policy: the **runtime** account is `aquila_runtime`
+(SELECT/INSERT/UPDATE/DELETE only, no DDL) and the **Flyway** account is
+`aquila_migrate` (DDL + DML) — distinct accounts satisfy
+`FlywayMigrationTargetPolicy`. The local `.env` mirrors the canonical scoped env
+`aquila-server/target/provision/env.ps1` (see §15).
+
+Result: **PASS** — `Tests run: 10, Failures: 0, Errors: 0, Skipped: 0`
+(`CoverageServiceTest` 4/4, `CrawlRecoveryIntegrationTest` 6/6). G02 (real
+source) remains an active gate — only the fixture adapter is wired until then.
+
+Post-§15 re-confirmation (same day): after the `.env` was aligned to the
+register above (`aquila_runtime` + no `serverTimezone`), the same command was
+re-run and passed again — **10 / 0 / 0 / 0, BUILD SUCCESS** — so the recorded
+evidence reflects the current, policy-compliant configuration, not the earlier
+ad-hoc one.
+
+### §15 change register (connection-string / time-zone convention)
+
+Recorded per 统一方案 §15 before being fixed into the local `.env`.
+
+| Item | Old | New | Reason |
+|---|---|---|---|
+| `STOCK_MYSQL_IT_URL` / `STOCK_MYSQL_IT_FLYWAY_URL` query params | `serverTimezone=UTC&useSSL=false&allowPublicKeyRetrieval=true` (added ad-hoc during first verification) | `useSSL=false&allowPublicKeyRetrieval=true&connectTimeout=10000` — matches the canonical `target/provision/env.ps1`; **no `serverTimezone` override** | The `serverTimezone=UTC` addition masked the real defect: a `DATETIME(6)` column with no timezone, read under a UTC connection on a non-UTC server, was interpreted ~8h in the future. The correct fix is the deterministic fixture `valid_from` (a fixed past timestamp), not a connection parameter. The connection string now follows the project's established UTC-storage convention without an extra override. |
+| Runtime DB account | `root` (administrative; used during the first verification) | `aquila_runtime` (scoped CRUD only) | Project policy requires the runtime account to hold no DDL; `root` defeated the least-privilege isolation that `FlywayMigrationTargetPolicy` only partially enforces (it checks Flyway ≠ runtime, not runtime ≠ admin). Aligned to the canonical provision env. |
+
+### Local `.env` key inventory (git-ignored; values masked)
+
+The local `.env` is never committed (`.gitignore` ignores `.env`). It mirrors
+`aquila-server/target/provision/env.ps1`. Keys consumed by the IT gate:
+
+| Variable | Purpose | Value (masked) |
+|---|---|---|
+| `STOCK_MYSQL_IT_SCHEMA` | target schema (must equal `stock_greenfield_20261109`) | `stock_greenfield_20261109` |
+| `STOCK_MYSQL_IT_URL` | runtime JDBC URL | `jdbc:mysql://192.168.18.32:3306/stock_greenfield_20261109?useSSL=false&allowPublicKeyRetrieval=true&connectTimeout=10000` |
+| `STOCK_MYSQL_IT_USER` / `_PASSWORD` | runtime account (CRUD only) | `aquila_runtime` / `Ar2_***` |
+| `STOCK_MYSQL_IT_FLYWAY_URL` | Flyway JDBC URL | same host/path as runtime URL |
+| `STOCK_MYSQL_IT_FLYWAY_USER` / `_PASSWORD` | Flyway account (DDL) | `aquila_migrate` / `Am1_***` |
+| `STOCK_TOTP_ENCRYPTION_KEY` | TOTP envelope key (Base64, 32 bytes) | canonical provision value (`AebY***`) — **not** a placeholder; the two Stage C IT classes do not exercise real TOTP encrypt/decrypt, so any valid 32-byte key is acceptable |
