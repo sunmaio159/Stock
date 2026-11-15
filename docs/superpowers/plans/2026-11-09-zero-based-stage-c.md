@@ -50,23 +50,25 @@
 - Consumes: Stage B securities identifiers and authenticated admin.
 - Produces: `SourceAdapter.fetch(SourceFetchRequest): SourcePage`; `CoverageService.commitPage(PageCommit): CoverageState`; durable policy/source/run/page/cursor/raw/job and Adapter-evidence tables.
 
-- [ ] **Step 1: Write failing coverage and recovery tests**
+- [x] **Step 1: Write failing coverage and recovery tests**
 
 Test complete, partial, unknown, unrecoverable; page-two failure after page-one success; transaction rollback preserving cursor; crash after commit before queue notification; repeated page idempotency; recent-N/untraceable source never COMPLETE.
 
-- [ ] **Step 2: Add V3 source/coverage/raw schema**
+- [x] **Step 2: Add V3 source/coverage/raw schema**
 
 Add policy permissions/version, subscriptions/version/effective range, source lease/fencing, run/page evidence, cursor version, raw revision identity and coverage rows with exact business interval and Adapter contract version.
 
-- [ ] **Step 3: Implement SourcePolicy, Adapter, and transactional page pipeline**
+- [x] **Step 3: Implement SourcePolicy, Adapter, and transactional page pipeline**
 
 Check ACCESS/STORE_RAW/STORE_NORMALIZED/ANALYZE/DISPLAY/EXPORT before each relevant operation. Fetch and parse outside transactions. Persist page raw, durable processing jobs, cursor CAS, and coverage state atomically.
 
-- [ ] **Step 4: Verify MySQL page failure and recovery**
+- [x] **Step 4: Verify MySQL page failure and recovery**
 
 Run: `mvn -f aquila-server/pom.xml -Pmysql-it -Dtest=CoverageServiceTest,CrawlRecoveryIntegrationTest test`
 
 Expected: PASS; first committed page remains PARTIAL until all required pages/termination evidence are proven.
+
+**Completed and accepted 2026-11-15.** The Step 4 command passed at implementation time (10/10), but that green result was explicitly not acceptance evidence: the first independent review of `ceae6fb` raised 2 Critical + 8 Important findings, and rounds 2 and 3 each returned `CHANGES_REQUIRED` again. The round-4 fix commit `0517dcc` was reviewed independently a fourth time over `03edf36..0517dcc` with verdict **APPROVED** (`.superpowers/sdd/2026-11-09-zero-based-stage-c/task-1-review-report-round4.md`): C1, C2, I1, I2 and F-1–F-5 all closed with falsifying tests, G-1 anchored on the persisted `page_terminal` flag, G-3–G-6 addressed. Round-4 verification: empty-schema gate 1/0, full `-Pmysql-it` suite 148/148 on real MySQL 8.4 (V3 replayed to v3), frontend four gates, same-origin clean jar. Commits `ceae6fb`, `c113601`, `03edf36`, `0517dcc` each carry the required co-author trailer and stage only Stage C Task 1 paths. Registry `C-T1-01` → `PASSED`. **Stage C Task 1: ACCEPTED / CLOSED.** G02 remains OPEN (fixture adapter only); the `m3_processing_job` naming and I3–I8 Task 1/Task 2 attribution remain unsigned owner-governance decisions, independent of this closure.
 
 ### Task 2: Revisions, Fencing, Mentions, and Lifecycle Barrier
 
