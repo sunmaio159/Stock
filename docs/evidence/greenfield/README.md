@@ -1204,12 +1204,48 @@ push-back:** the reviewer said `enqueueParseJob` used a random UUID as `input_ke
 conclusion (the job idempotency key cannot fire on redelivery) holds, but the field attribution
 does not; I-4 fixes the actual cause.
 
-**Falsification of the fix pass:** removing all five fixes at once produced exactly **6 red**
-across 14 governance tests (the monotone-pointer fix locks two tests); restoring them produced
-green. Focused governance + Task 1 recovery regression **24/24**; full backend
+**Falsification of the round-1 fix pass:** removing the four *falsifiable* fixes at once
+produced **6 red** across 14 governance tests; restoring them produced green. Round 2 correctly
+pointed out that this probe did **not** cover I-5 (`SourcePolicy` gate — zero red lights at that
+time) or M-1/M-3, and that the monotone `doAdvanceProcessed` guard it exercises predates this
+fix pass. Focused governance + Task 1 recovery regression **24/24**; full backend
 `-Pmysql-it` **171/171**; frontend four gates all pass; no probe leftovers.
 
 **Deliberately left open (not dropped):** source-row X-lock contention / lock-order divergence
 vs the crawl path, and the partial capability set in `LifecycleGuard` — both recorded as Stage D
 notes. The plan Files-list discrepancy (`PostsView.vue` / `openapi.yaml`) still needs owner
 sign-off. `C-T2-01` remains `OPEN` until a review returns `APPROVED`.
+
+### Stage C Task 2 — independent review round 2 and fix pass (2026-11-15)
+
+Round-2 report: `.superpowers/sdd/2026-11-09-zero-based-stage-c/task-2-review-report-round2.md`,
+diff `review-e1b85c4..1f79bec.diff`. Verdict **With fixes**: no Critical, 2 Important, 6 Minor.
+I-1/I-2/I-3/I-4 and M-1/M-2/M-3 were confirmed CLOSED with falsifying tests; I-5 was NOT
+closed, and the fix pass introduced a concurrency regression.
+
+- **Important-1 (real, reproduced on MySQL 8.4).** Putting three `policy.require` plain
+  SELECTs at the head of the `receive()` transaction fixed the REPEATABLE READ ReadView before
+  the doc row lock was held. A concurrent redelivery then could not see the first transaction's
+  row. The reviewer predicted a silent duplicate revision; the actual observed failure was
+  sharper — `EmptyResultDataAccessException: expected 1, actual 0` on the doc lookup, captured
+  by the new `concurrentLocalOrderRedeliveryCreatesOneRevision` IT (two threads, two physical
+  connections). Fix: entry gate **outside** the transaction (like `CrawlApplicationService`),
+  `upsertDocument` as the transaction's first statement with `SELECT doc_id … FOR UPDATE`, then
+  an in-transaction capability re-check after the lock. The concurrent IT went red before the
+  fix and green after.
+- **Important-2 (no falsifying test for I-5).** Added
+  `receiveRefusesRevokedSourceBeforeAnyWrite` and
+  `receiveRefusesSourceWithoutNormalizedStorageGrant`; removing the five `policy.require` calls
+  makes exactly **2 red / 6 green** in `GovernanceConstraintIntegrationTest`. The round-1
+  "6 red / all five fixes" wording is corrected above.
+- Also closed: dedup key now includes `parser_version` (M-4); `recover()` binds the same
+  `Instant` as `claim()` (M-2), rethrows `LifecycleBlockedException` before the wider
+  `ApiException` catch (M-3), and records `last_error` + `retry_count` instead of silently
+  swallowing a skipped job (M-1, partial — a dead-letter retry cap stays a Stage D policy);
+  `beforeCommitHook` is read into a local before the null check (M-6).
+
+**Verification:** focused governance + recovery **24/24**; full backend `-Pmysql-it`
+**174/174** with `-DargLine=-Dspring.test.context.cache.maxSize=4`; frontend four gates;
+no probe leftovers. Source-row lock contention,
+the partial `LifecycleGuard` capability set and the plan Files-list discrepancy remain recorded
+as Stage D / owner sign-off items.

@@ -6,6 +6,13 @@ import com.aquila.auth.AuthMySqlCondition;
 import com.aquila.crawl.JobLease;
 import com.aquila.crawl.ProcessingJobWorker;
 import com.aquila.masterdata.MasterDataFixture;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -132,6 +139,45 @@ class RevisionOrderingIntegrationTest {
         assertThat(count("SELECT COUNT(*) FROM m3_processing_job WHERE doc_revision_id IS NOT NULL"))
                 .isEqualTo(1);
         assertThat(observedOrder(first.docId())).isEqualTo(1);
+    }
+
+    /**
+     * Review round-2 Important-1: two concurrent redeliveries of the same local-order
+     * observation must still produce ONE revision. Under REPEATABLE READ, a consistent-read
+     * snapshot taken before the doc row lock hides the first transaction's revision and
+     * silently allocates a second order. This test is intentionally run against real MySQL
+     * with two threads (each gets its own connection/transaction).
+     */
+    @Test
+    void concurrentLocalOrderRedeliveryCreatesOneRevision() throws Exception {
+        String raw = GovernanceFixture.insertRawRecord(jdbc, "POST-6", "hash-concurrent");
+        ObservedDocument document = GovernanceFixture.observed(
+                "POST-6", null, "hash-concurrent", raw, GovernanceFixture.SECURITY_A);
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            List<Future<DocumentRevision>> futures = new ArrayList<>();
+            for (int index = 0; index < 2; index++) {
+                futures.add(pool.submit(() -> {
+                    start.await();
+                    return revisions.receive(document);
+                }));
+            }
+            start.countDown();
+            for (Future<DocumentRevision> future : futures) {
+                future.get(30, TimeUnit.SECONDS);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        assertThat(count("SELECT COUNT(*) FROM m4_doc_revision")).isEqualTo(1);
+        assertThat(count("SELECT COUNT(*) FROM m3_processing_job WHERE doc_revision_id IS NOT NULL"))
+                .isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+                SELECT latest_observed_revision_order FROM m4_normalized_doc
+                """, Long.class)).isEqualTo(1);
     }
 
     @Test

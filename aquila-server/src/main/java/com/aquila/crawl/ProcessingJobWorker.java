@@ -5,7 +5,6 @@ import com.aquila.governance.DocRef;
 import com.aquila.governance.LifecycleBlockedException;
 import com.aquila.governance.LifecycleGuard;
 import com.aquila.governance.RevisionService;
-import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -81,8 +80,7 @@ public class ProcessingJobWorker {
                 WHERE state = 'PENDING'
                    OR (state = 'CLAIMED' AND lease_until < ?)
                 ORDER BY created_at, job_id
-                """, (resultSet, rowNumber) -> resultSet.getString("job_id"),
-                Timestamp.from(now));
+                """, (resultSet, rowNumber) -> resultSet.getString("job_id"), now);
         int processed = 0;
         for (String jobId : candidates) {
             try {
@@ -90,11 +88,21 @@ public class ProcessingJobWorker {
                 if (lease != null && process(lease) != null) {
                     processed++;
                 }
+            } catch (LifecycleBlockedException blocked) {
+                // Round-2 M-3: process() terminalises these internally. Should one ever
+                // escape, never swallow it as a recoverable per-job failure.
+                throw blocked;
             } catch (ApiException exception) {
                 // A stale token, a missing raw record or a conflicting claim is a per-job
                 // condition. Skipping it lets the rest of the batch recover; the job stays
                 // for the next scan, and claim() already reclaims expired CLAIMED leases.
-                // LifecycleBlockedException is terminalised inside process() and never here.
+                // Round-2 M-1: make the skip observable instead of silently dropping it.
+                jdbc.update("""
+                        UPDATE m3_processing_job
+                        SET last_error = LEFT(?, 512), retry_count = retry_count + 1,
+                            updated_at = NOW(6)
+                        WHERE job_id = ?
+                        """, exception.getMessage(), jobId);
             }
         }
         return processed;
@@ -148,8 +156,9 @@ public class ProcessingJobWorker {
                 if (job.docRevisionId() != null) {
                     // D4: the seam is confined to document-revision jobs. Crawl jobs never
                     // invoke injected behaviour, so a stray hook cannot affect Task 1 paths.
-                    if (beforeCommitHook != null) {
-                        beforeCommitHook.run();
+                    Runnable hook = beforeCommitHook;
+                    if (hook != null) {
+                        hook.run();
                     }
                     assertLeaseCurrent(lease);
                     DocRef ref = resolveDocRef(job.docRevisionId());

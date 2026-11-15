@@ -40,16 +40,28 @@ public class RevisionService {
     }
 
     public DocumentRevision receive(ObservedDocument observed) {
+        // Entry gate (unified design §8.1), before any write. It runs OUTSIDE the
+        // transaction, so its plain SELECT does not create a ReadView for that transaction.
+        // STORE_RAW belongs to the crawl stage, not to normalized ingestion.
+        policy.require(Permission.ACCESS, observed.sourceCode());
+        policy.require(Permission.STORE_NORMALIZED, observed.sourceCode());
+        policy.require(Permission.ANALYZE, observed.sourceCode());
+
         return transactions.execute(status -> {
-            // Review round-1 I-5: unified design §8.1 checks every capability at its
-            // point of use. The commit barrier re-checks grants later, but the rows are
-            // already persisted by then, so receive() must fail closed before its first
-            // write. STORE_RAW belongs to the crawl stage, not to normalized ingestion.
-            policy.require(Permission.ACCESS, observed.sourceCode());
+            // Review round-2 Important-1: the first statements in the transaction MUST be
+            // current/locking reads. Under REPEATABLE READ a plain SELECT here would fix
+            // the ReadView before the doc row lock is held, so a concurrent redelivery
+            // cannot see the first transaction's row (verified on MySQL 8.4:
+            // EmptyResultDataAccessException on the doc lookup). A concurrent receiver
+            // blocks in upsertDocument until this one commits, so the ReadView created by
+            // the re-check below is fresh.
+            String docId = upsertDocument(observed);
+
+            // Re-check the capabilities this write consumes, at the point of use, after
+            // the doc row lock is held; the commit barrier re-checks them once more before
+            // any derived write.
             policy.require(Permission.STORE_NORMALIZED, observed.sourceCode());
             policy.require(Permission.ANALYZE, observed.sourceCode());
-
-            String docId = upsertDocument(observed);
 
             List<DocPointer> pointers = jdbc.query("""
                     SELECT latest_observed_revision_order, lifecycle_version
@@ -70,11 +82,11 @@ public class RevisionService {
                         SELECT doc_revision_id, revision_order
                         FROM m4_doc_revision
                         WHERE doc_id = ? AND raw_record_id = ?
-                          AND normalizer_version = ? AND body_hash = ?
+                          AND normalizer_version = ? AND parser_version = ? AND body_hash = ?
                         """, (resultSet, rowNumber) -> new LocalRedelivery(
                                 resultSet.getString(1), resultSet.getLong(2)),
                         docId, observed.rawRecordId(), observed.normalizerVersion(),
-                        observed.bodyHash());
+                        observed.parserVersion(), observed.bodyHash());
                 if (!redelivered.isEmpty()) {
                     LocalRedelivery row = redelivered.get(0);
                     return new DocumentRevision(docId, row.docRevisionId(),
@@ -168,7 +180,8 @@ public class RevisionService {
                 ON DUPLICATE KEY UPDATE doc_id = doc_id
                 """, UUID.randomUUID().toString(), observed.sourceCode(), observed.outerId());
         return jdbc.queryForObject("""
-                SELECT doc_id FROM m4_normalized_doc WHERE source_code = ? AND outer_id = ?
+                SELECT doc_id FROM m4_normalized_doc
+                WHERE source_code = ? AND outer_id = ? FOR UPDATE
                 """, String.class, observed.sourceCode(), observed.outerId());
     }
 

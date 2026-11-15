@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -181,6 +182,58 @@ class GovernanceConstraintIntegrationTest {
 
         assertThat(dirtyMentions(revisionId)).isZero();
         assertThat(unconsumedMarkers(revisionId)).isZero();
+    }
+
+    /**
+     * Review round-2 Important-2: I-5's SourcePolicy gate needs its own falsifying test.
+     * Removing the require() calls makes this red.
+     */
+    @Test
+    void receiveRefusesRevokedSourceBeforeAnyWrite() {
+        jdbc.update("""
+                UPDATE m3_source_config SET permission_status = 'REVOKED' WHERE source_code = ?
+                """, GovernanceFixture.SOURCE_CODE);
+        String raw = GovernanceFixture.insertRawRecord(jdbc, "POST-POLICY-A", BODY_HASH);
+        ObservedDocument document = GovernanceFixture.observed(
+                "POST-POLICY-A", 1L, BODY_HASH, raw, GovernanceFixture.SECURITY_A);
+
+        assertThatThrownBy(() -> revisions.receive(document))
+                .isInstanceOf(ApiException.class)
+                .satisfies(cause -> assertThat(((ApiException) cause).status())
+                        .isEqualTo(HttpStatus.FORBIDDEN));
+        assertThat(countRevisions()).isZero();
+        assertThat(countDocJobs()).isZero();
+    }
+
+    /** A missing per-capability grant must fail closed even when the source is ACTIVE. */
+    @Test
+    void receiveRefusesSourceWithoutNormalizedStorageGrant() {
+        jdbc.update("""
+                UPDATE m3_source_config SET perm_store_normalized = FALSE WHERE source_code = ?
+                """, GovernanceFixture.SOURCE_CODE);
+        String raw = GovernanceFixture.insertRawRecord(jdbc, "POST-POLICY-B", BODY_HASH);
+        ObservedDocument document = GovernanceFixture.observed(
+                "POST-POLICY-B", 1L, BODY_HASH, raw, GovernanceFixture.SECURITY_A);
+
+        assertThatThrownBy(() -> revisions.receive(document))
+                .isInstanceOf(ApiException.class)
+                .satisfies(cause -> assertThat(((ApiException) cause).status())
+                        .isEqualTo(HttpStatus.FORBIDDEN));
+        assertThat(countRevisions()).isZero();
+        assertThat(countDocJobs()).isZero();
+    }
+
+    private int countRevisions() {
+        Integer value = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM m4_doc_revision", Integer.class);
+        return value == null ? 0 : value;
+    }
+
+    private int countDocJobs() {
+        Integer value = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM m3_processing_job WHERE doc_revision_id IS NOT NULL",
+                Integer.class);
+        return value == null ? 0 : value;
     }
 
     private Fixture prepare() {
