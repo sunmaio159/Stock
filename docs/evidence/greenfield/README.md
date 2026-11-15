@@ -837,8 +837,12 @@ Verification, all executed:
 - clean-jar gate → `mvn clean package` BUILD SUCCESS, jar `BOOT-INF/classes/static/` embeds
   `index--bfHftHD.js` and `index-DZaAL6_G.css`, matching `aquila-web/dist` byte-for-byte.
 
-`C-T1-01` still stays `CHANGES_REQUIRED`: the code is committed but not closed until the fourth
-independent review confirms it.
+The fourth independent review of `03edf36..0517dcc` returned **APPROVED**: it confirmed by direct
+inspection that `terminalPageProved` is now anchored on the persisted `page_terminal` flag and
+that all three G-1 counterexample tests turn red when that condition is removed, and that the G-4
+concurrent claim test exercises the real `FOR UPDATE` + CAS race without flakiness. `C-T1-01`
+implementation findings are therefore closed with evidence (commit `0517dcc`); the separate
+owner-governance decisions below are unaffected.
 
 ### Status
 
@@ -874,13 +878,14 @@ Full findings with my verification status:
 `.superpowers/sdd/2026-11-09-zero-based-stage-c/task-1-review-report-round2.md`; review
 package `review-1d2727c..c113601.diff`.
 
-Still open and not decided by the implementer: I3–I8 and their Task 1 / Task 2
-attribution (round-1 precondition 2 — the owner's decision has not been issued), the
-`m3_processing_job` versus `m4_processing_job` naming deviation, and now the migration path
-for the terminal flag G-1 requires. F-1, F-5 and the OpenAPI gaps listed under F-4 were
-addressed in round 3 and confirmed by that round's review; **F-2 and I1 are not closed**,
-because the review found the completeness proof still infers the terminal page from an
-absent cursor. Nothing here is recorded as closed on the implementer's own authority.
+Closed on review, not on the implementer's own authority: F-1, F-5 and the OpenAPI gaps under
+F-4 (round 3, confirmed by the third review) and **F-2 / I1 / G-1** (round 4, commit `0517dcc`,
+confirmed APPROVED by the fourth review, which verified the persisted `page_terminal` flag drives
+the proof and that the counterexample tests fail when it is removed). The G-1 migration path —
+which round 3 had correctly left to the owner — was issued by the owner (`63d4090`, edit `V3` in
+place) and executed in round 4. Still open as owner-governance decisions, independent of this
+task's correctness: I3–I8 and their Task 1 / Task 2 attribution, and the `m3_processing_job`
+versus `m4_processing_job` naming deviation.
 
 Earlier in the same day a first review round and the owner's fixes addressed: a blocking
 compile error in `SourcePolicy` (`query` → `queryForObject`, which also made the
