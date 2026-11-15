@@ -1168,11 +1168,48 @@ barrier, and four IT classes (FT-02 3, FT-03 3, constraint 4). As-built spec:
   recompute-marker invariants. The Stage F residue scan and recovery report are still pending,
   so the register item is not passed.
 
-**Registry `C-T2-01`:** implementation complete and gates green, but **PENDING independent
-review** — Stage C Task 1 required four review rounds before `C-T1-01` could move to `PASSED`,
-so a green test run alone is not acceptance evidence. Task 2 Steps stay `[ ]` until that review
-is `APPROVED`; the implementation commit is the review subject, not a closure marker.
+**Registry `C-T2-01`:** implementation complete and gates green, but **still `OPEN`** — Stage C
+Task 1 required four review rounds before `C-T1-01` could move to `PASSED`, so a green test run
+alone is not acceptance evidence. Independent review round 1 returned `With fixes` (below);
+Task 2 Steps stay `[ ]` until a review is `APPROVED`. Neither commit is a closure marker.
 
-**Committed:** `feat: add immutable revisions and lifecycle guards` with the required co-author
-trailer, staging only Task 2 paths; unrelated `落地文档设计/` working-tree changes are left
-untouched.
+**Committed:** `e1b85c4 feat: add immutable revisions and lifecycle guards` with the required
+co-author trailer, staging only Task 2 paths; unrelated `落地文档设计/` working-tree changes are
+left untouched.
+
+### Stage C Task 2 — independent review round 1 and fix pass (2026-11-15)
+
+Round-1 report: `.superpowers/sdd/2026-11-09-zero-based-stage-c/task-2-review-report-round1.md`,
+diff `review-eb7636d..e1b85c4.diff` (1571 lines). An independent read-only reviewer traced the
+V4 DDL, governance services, worker and all four IT classes, plus the V2/V3 dependencies.
+Verdict **With fixes**: **no Critical**, 5 Important, 5 Minor. It confirmed the fingerprint
+write/verify expressions are byte-identical including NULL handling, `receive()` serialises on
+the doc row lock so pointers stay monotone, the terminal-state UPDATE cannot overwrite a
+reclaimed job, and the trigger failure is disclosed honestly.
+
+All five Important issues are fixed in the follow-up commit:
+
+| # | Finding | Fix |
+|---|---|---|
+| I-1 | Non-`LifecycleBlockedException` failures stranded jobs in `CLAIMED`; `recover()` scanned only `PENDING` and one exception aborted the batch | `recover()` now scans `PENDING` **and** lease-expired `CLAIMED`, with a per-job `ApiException` catch |
+| I-2 | FT-02 unproven at worker level | new test processes R2's PARSE job before R1's and asserts the processed pointer stays 2 |
+| I-3 | `derivedCommitChangesOnlyStatusColumn` was a tautology | replaced by `supersededRevisionCannotProduceDerivedWrites`; the worker now checks the `OBSERVED → PROCESSED` CAS row count as a commit qualifier |
+| I-4 | local-order `receive()` was not idempotent | short-circuit on `(raw_record_id, normalizer_version, body_hash)` under the doc row lock |
+| I-5 | `receive()` bypassed `SourcePolicy` | `SourcePolicy.require(ACCESS / STORE_NORMALIZED / ANALYZE)` inside the transaction before the first write |
+
+Also fixed: NULL `captured_lifecycle_version` no longer silently becomes `0` (fails closed),
+the status CAS row count is checked, and `beforeCommitHook` is `volatile`. **Executor
+push-back:** the reviewer said `enqueueParseJob` used a random UUID as `input_key`; reading
+`RevisionService` shows `input_key` is `revisionId` and `job_id` is the random UUID. The
+conclusion (the job idempotency key cannot fire on redelivery) holds, but the field attribution
+does not; I-4 fixes the actual cause.
+
+**Falsification of the fix pass:** removing all five fixes at once produced exactly **6 red**
+across 14 governance tests (the monotone-pointer fix locks two tests); restoring them produced
+green. Focused governance + Task 1 recovery regression **24/24**; full backend
+`-Pmysql-it` **171/171**; frontend four gates all pass; no probe leftovers.
+
+**Deliberately left open (not dropped):** source-row X-lock contention / lock-order divergence
+vs the crawl path, and the partial capability set in `LifecycleGuard` — both recorded as Stage D
+notes. The plan Files-list discrepancy (`PostsView.vue` / `openapi.yaml`) still needs owner
+sign-off. `C-T2-01` remains `OPEN` until a review returns `APPROVED`.

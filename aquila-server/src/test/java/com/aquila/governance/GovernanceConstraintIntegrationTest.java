@@ -1,12 +1,16 @@
 package com.aquila.governance;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.aquila.auth.AuthMySqlCondition;
+import com.aquila.common.ApiException;
 import com.aquila.crawl.JobLease;
 import com.aquila.crawl.JobOutcome;
 import com.aquila.crawl.ProcessingJobWorker;
 import com.aquila.masterdata.MasterDataFixture;
+import java.time.Clock;
+import java.time.Duration;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -45,11 +49,13 @@ class GovernanceConstraintIntegrationTest {
     void reset() {
         GovernanceFixture.reset(jdbc);
         worker.setBeforeCommitHook(null);
+        worker.setClock(Clock.systemUTC());
     }
 
     @AfterEach
     void cleanup() {
         worker.setBeforeCommitHook(null);
+        worker.setClock(Clock.systemUTC());
         GovernanceFixture.clear(jdbc);
     }
 
@@ -74,28 +80,75 @@ class GovernanceConstraintIntegrationTest {
         assertThat(dirtyMentions(fixture.revision().docRevisionId())).isEqualTo(1);
     }
 
+    /**
+     * Review round-1 I-3: replaces the tautological test that re-ran the worker's own CAS.
+     * A SUPERSEDED revision must not produce a derived commit; removing the worker's
+     * status-CAS row-count check makes this red (outcome becomes COMPLETE).
+     */
     @Test
-    void derivedCommitChangesOnlyStatusColumn() {
+    void supersededRevisionCannotProduceDerivedWrites() {
         Fixture fixture = prepare();
         String revisionId = fixture.revision().docRevisionId();
-        assertThat(fingerprintMatches(revisionId)).isTrue();
+        jdbc.update("""
+                UPDATE m4_doc_revision SET status = 'SUPERSEDED' WHERE doc_revision_id = ?
+                """, revisionId);
 
         JobLease lease = worker.claim(fixture.jobId());
         assertThat(lease).isNotNull();
-        assertThat(worker.process(lease).state()).isEqualTo("COMPLETE");
+        JobOutcome outcome = worker.process(lease);
 
-        assertThat(status(revisionId)).isEqualTo("PROCESSED");
+        assertThat(outcome.state()).isEqualTo("REVOKED");
+        assertThat(jobState(fixture.jobId())).isEqualTo("REVOKED");
+        assertThat(status(revisionId)).isEqualTo("SUPERSEDED");
+        assertThat(processedOrder(fixture.revision().docId())).isZero();
+        assertThat(dirtyMentions(revisionId)).isEqualTo(1);
+        assertThat(unconsumedMarkers(revisionId)).isEqualTo(1);
         assertThat(bodyHash(revisionId)).isEqualTo(BODY_HASH);
         assertThat(fingerprintMatches(revisionId)).isTrue();
+    }
 
-        // The OBSERVED -> PROCESSED CAS cannot run twice: status never regresses or
-        // re-applies a derived write.
-        int rows = jdbc.update("""
-                UPDATE m4_doc_revision SET status = 'PROCESSED'
-                WHERE doc_revision_id = ? AND status = 'OBSERVED'
-                """, revisionId);
-        assertThat(rows).isZero();
-        assertThat(status(revisionId)).isEqualTo("PROCESSED");
+    /**
+     * Review round-1 I-1: a stale lease must be reclaimable once it expires, rather than
+     * stranding the job in CLAIMED forever.
+     */
+    @Test
+    void expiredClaimedJobIsReclaimedAndCompleted() {
+        Fixture fixture = prepare();
+        JobLease oldLease = worker.claim(fixture.jobId());
+        assertThat(oldLease).isNotNull();
+        jdbc.update("""
+                UPDATE m3_processing_job SET fencing_token = fencing_token + 1 WHERE job_id = ?
+                """, fixture.jobId());
+        assertThatThrownBy(() -> worker.process(oldLease)).isInstanceOf(ApiException.class);
+        assertThat(jobState(fixture.jobId())).isEqualTo("CLAIMED");
+
+        worker.setClock(Clock.offset(Clock.systemUTC(), Duration.ofMinutes(11)));
+
+        assertThat(worker.recover()).isEqualTo(1);
+        assertThat(jobState(fixture.jobId())).isEqualTo("COMPLETE");
+        assertThat(status(fixture.revision().docRevisionId())).isEqualTo("PROCESSED");
+    }
+
+    /** Review round-1 I-1: one failing job must not abort the rest of a recovery batch. */
+    @Test
+    void oneBadJobDoesNotAbortTheRecoveryBatch() {
+        Fixture fixture = prepare();
+        // Deliberately older created_at so this job is scanned first. Its dangling raw
+        // record makes process() throw ApiException; without a per-job catch the good
+        // job below would never be reached.
+        jdbc.update("""
+                INSERT INTO m3_processing_job
+                    (job_id, input_type, input_key, source_code, raw_record_id, fetched_date,
+                     stage, processor_version, input_revision, state, fencing_token,
+                     retry_count, created_at, updated_at)
+                SELECT UUID(), input_type, CONCAT(input_key, '-bad'), source_code,
+                       'raw-missing', fetched_date, stage, processor_version, input_revision,
+                       'PENDING', 0, 0, DATE_SUB(NOW(6), INTERVAL 1 DAY), NOW(6)
+                FROM m3_processing_job WHERE job_id = ?
+                """, fixture.jobId());
+
+        assertThat(worker.recover()).isEqualTo(1);
+        assertThat(jobState(fixture.jobId())).isEqualTo("COMPLETE");
     }
 
     @Test

@@ -5,6 +5,7 @@ import com.aquila.governance.DocRef;
 import com.aquila.governance.LifecycleBlockedException;
 import com.aquila.governance.LifecycleGuard;
 import com.aquila.governance.RevisionService;
+import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -40,7 +41,7 @@ public class ProcessingJobWorker {
     private Clock clock = Clock.systemUTC();
 
     /** Test seam: runs after computation and before the commit barrier, inside the worker transaction. */
-    private Runnable beforeCommitHook;
+    private volatile Runnable beforeCommitHook;
 
     public ProcessingJobWorker(
             JdbcTemplate jdbc,
@@ -68,16 +69,32 @@ public class ProcessingJobWorker {
         this.beforeCommitHook = hook;
     }
 
-    /** Scan all durable PENDING jobs and process them; the recovery path for missed notifications. */
+    /**
+     * Scan PENDING jobs and lease-expired CLAIMED jobs; the recovery path for missed
+     * notifications and for workers that died after claiming. Review round-1 I-1: one bad
+     * job must not abort the batch, and an expired CLAIMED job must be reclaimable.
+     */
     public int recover() {
-        List<String> pending = jdbc.query(
-                "SELECT job_id FROM m3_processing_job WHERE state = 'PENDING' ORDER BY created_at, job_id",
-                (resultSet, rowNumber) -> resultSet.getString("job_id"));
+        Instant now = clock.instant();
+        List<String> candidates = jdbc.query("""
+                SELECT job_id FROM m3_processing_job
+                WHERE state = 'PENDING'
+                   OR (state = 'CLAIMED' AND lease_until < ?)
+                ORDER BY created_at, job_id
+                """, (resultSet, rowNumber) -> resultSet.getString("job_id"),
+                Timestamp.from(now));
         int processed = 0;
-        for (String jobId : pending) {
-            JobLease lease = claim(jobId);
-            if (lease != null && process(lease) != null) {
-                processed++;
+        for (String jobId : candidates) {
+            try {
+                JobLease lease = claim(jobId);
+                if (lease != null && process(lease) != null) {
+                    processed++;
+                }
+            } catch (ApiException exception) {
+                // A stale token, a missing raw record or a conflicting claim is a per-job
+                // condition. Skipping it lets the rest of the batch recover; the job stays
+                // for the next scan, and claim() already reclaims expired CLAIMED leases.
+                // LifecycleBlockedException is terminalised inside process() and never here.
             }
         }
         return processed;
@@ -113,7 +130,7 @@ public class ProcessingJobWorker {
                         WHERE job_id = ? AND state = 'CLAIMED' AND fencing_token = ?
                         """, (resultSet, rowNumber) -> new JobRow(
                                 resultSet.getString(1), resultSet.getString(2),
-                                resultSet.getString(3), resultSet.getLong(4)),
+                                resultSet.getString(3), resultSet.getObject(4, Long.class)),
                         lease.jobId(), lease.fencingToken());
                 if (rows.isEmpty()) {
                     throw new ApiException(HttpStatus.CONFLICT, "Job is not claimable under this lease");
@@ -136,13 +153,26 @@ public class ProcessingJobWorker {
                     }
                     assertLeaseCurrent(lease);
                     DocRef ref = resolveDocRef(job.docRevisionId());
+                    // Review round-1 M-1: a NULL captured version must fail closed, not be
+                    // silently coerced to 0 by ResultSet.getLong.
+                    if (job.capturedLifecycleVersion() == null) {
+                        throw new LifecycleBlockedException(
+                                "REVOKED", "Job has no captured lifecycle version");
+                    }
                     lifecycleGuard.assertCommittable(ref, job.capturedLifecycleVersion());
                     lifecycleGuard.assertContentUnchanged(ref.docRevisionId());
-                    revisionService.advanceProcessedPointer(ref.docId(), ref.revisionOrder());
-                    jdbc.update("""
+                    // Review round-1 I-3 / M-2: the CAS is a commit qualifier, not a
+                    // side effect. A SUPERSEDED or already PROCESSED revision must not
+                    // advance pointers or produce a second derived commit.
+                    int transitioned = jdbc.update("""
                             UPDATE m4_doc_revision SET status = 'PROCESSED'
                             WHERE doc_revision_id = ? AND status = 'OBSERVED'
                             """, ref.docRevisionId());
+                    if (transitioned != 1) {
+                        throw new LifecycleBlockedException(
+                                "REVOKED", "Revision is not in OBSERVED state");
+                    }
+                    revisionService.advanceProcessedPointer(ref.docId(), ref.revisionOrder());
                     jdbc.update("""
                             UPDATE m4_entity_mention SET is_dirty = FALSE
                             WHERE doc_revision_id = ?
@@ -215,5 +245,5 @@ public class ProcessingJobWorker {
             String jobId,
             String rawRecordId,
             String docRevisionId,
-            long capturedLifecycleVersion) {}
+            Long capturedLifecycleVersion) {}
 }

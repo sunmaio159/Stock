@@ -1,6 +1,8 @@
 package com.aquila.governance;
 
 import com.aquila.common.ApiException;
+import com.aquila.sourcepolicy.Permission;
+import com.aquila.sourcepolicy.SourcePolicy;
 import java.sql.Date;
 import java.sql.Timestamp;
 import java.util.List;
@@ -28,14 +30,25 @@ public class RevisionService {
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
+    private final SourcePolicy policy;
 
-    public RevisionService(JdbcTemplate jdbc, TransactionTemplate transactions) {
+    public RevisionService(
+            JdbcTemplate jdbc, TransactionTemplate transactions, SourcePolicy policy) {
         this.jdbc = jdbc;
         this.transactions = transactions;
+        this.policy = policy;
     }
 
     public DocumentRevision receive(ObservedDocument observed) {
         return transactions.execute(status -> {
+            // Review round-1 I-5: unified design §8.1 checks every capability at its
+            // point of use. The commit barrier re-checks grants later, but the rows are
+            // already persisted by then, so receive() must fail closed before its first
+            // write. STORE_RAW belongs to the crawl stage, not to normalized ingestion.
+            policy.require(Permission.ACCESS, observed.sourceCode());
+            policy.require(Permission.STORE_NORMALIZED, observed.sourceCode());
+            policy.require(Permission.ANALYZE, observed.sourceCode());
+
             String docId = upsertDocument(observed);
 
             List<DocPointer> pointers = jdbc.query("""
@@ -46,6 +59,29 @@ public class RevisionService {
                             new DocPointer(resultSet.getLong(1), resultSet.getLong(2)),
                     docId);
             DocPointer pointer = pointers.get(0);
+
+            // Review round-1 I-4: at-least-once delivery is a pipeline assumption. With
+            // no source sequence, the same (raw record, normalizer version, body hash)
+            // is the same observation; short-circuit before allocating a fresh local
+            // order so a redelivery is a no-op rather than a new revision + job. The
+            // doc row lock above serialises this check with concurrent receives.
+            if (observed.sourceRevisionOrder() == null) {
+                List<LocalRedelivery> redelivered = jdbc.query("""
+                        SELECT doc_revision_id, revision_order
+                        FROM m4_doc_revision
+                        WHERE doc_id = ? AND raw_record_id = ?
+                          AND normalizer_version = ? AND body_hash = ?
+                        """, (resultSet, rowNumber) -> new LocalRedelivery(
+                                resultSet.getString(1), resultSet.getLong(2)),
+                        docId, observed.rawRecordId(), observed.normalizerVersion(),
+                        observed.bodyHash());
+                if (!redelivered.isEmpty()) {
+                    LocalRedelivery row = redelivered.get(0);
+                    return new DocumentRevision(docId, row.docRevisionId(),
+                            observed.sourceCode(), observed.outerId(), row.revisionOrder(),
+                            pointer.latestObserved());
+                }
+            }
 
             long order = observed.sourceRevisionOrder() != null
                     ? observed.sourceRevisionOrder()
@@ -219,4 +255,6 @@ public class RevisionService {
     private record DocPointer(long latestObserved, long lifecycleVersion) {}
 
     private record ExistingRevision(String docRevisionId, String bodyHash) {}
+
+    private record LocalRedelivery(String docRevisionId, long revisionOrder) {}
 }

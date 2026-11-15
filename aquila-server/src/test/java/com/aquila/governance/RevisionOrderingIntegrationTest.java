@@ -3,6 +3,8 @@ package com.aquila.governance;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.aquila.auth.AuthMySqlCondition;
+import com.aquila.crawl.JobLease;
+import com.aquila.crawl.ProcessingJobWorker;
 import com.aquila.masterdata.MasterDataFixture;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -25,6 +27,7 @@ class RevisionOrderingIntegrationTest {
 
     @Autowired private JdbcTemplate jdbc;
     @Autowired private RevisionService revisions;
+    @Autowired private ProcessingJobWorker worker;
 
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
@@ -87,6 +90,50 @@ class RevisionOrderingIntegrationTest {
         assertThat(processedOrder(first.docId())).isEqualTo(2);
     }
 
+    /**
+     * Review round-1 I-2: FT-02 must hold at the worker level, not only for direct pointer
+     * calls. Processing R2's PARSE job first and R1's afterwards must leave the processed
+     * pointer at 2; removing the monotone WHERE on doAdvanceProcessed makes this red.
+     */
+    @Test
+    void processingJobsOutOfOrderCannotMoveProcessedPointerBackwards() {
+        String rawR1 = GovernanceFixture.insertRawRecord(jdbc, "POST-4", "hash-r1");
+        String rawR2 = GovernanceFixture.insertRawRecord(jdbc, "POST-4", "hash-r2");
+        DocumentRevision r1 = revisions.receive(GovernanceFixture.observed(
+                "POST-4", 1L, "hash-r1", rawR1, GovernanceFixture.SECURITY_A));
+        DocumentRevision r2 = revisions.receive(GovernanceFixture.observed(
+                "POST-4", 2L, "hash-r2", rawR2, GovernanceFixture.SECURITY_A));
+
+        JobLease lease2 = worker.claim(jobFor(r2.docRevisionId()));
+        assertThat(lease2).isNotNull();
+        assertThat(worker.process(lease2).state()).isEqualTo("COMPLETE");
+        assertThat(processedOrder(r1.docId())).isEqualTo(2);
+
+        JobLease lease1 = worker.claim(jobFor(r1.docRevisionId()));
+        assertThat(lease1).isNotNull();
+        assertThat(worker.process(lease1).state()).isEqualTo("COMPLETE");
+        assertThat(processedOrder(r1.docId())).isEqualTo(2);
+        assertThat(currentRevision(r1.docId())).isEqualTo(r2.docRevisionId());
+    }
+
+    /** Review round-1 I-4: local-order redelivery must be a no-op, not a new revision. */
+    @Test
+    void localOrderRedeliveryIsIdempotent() {
+        String raw = GovernanceFixture.insertRawRecord(jdbc, "POST-5", "hash-repeat");
+        ObservedDocument document = GovernanceFixture.observed(
+                "POST-5", null, "hash-repeat", raw, GovernanceFixture.SECURITY_A);
+
+        DocumentRevision first = revisions.receive(document);
+        DocumentRevision again = revisions.receive(document);
+
+        assertThat(again.docRevisionId()).isEqualTo(first.docRevisionId());
+        assertThat(again.revisionOrder()).isEqualTo(1);
+        assertThat(count("SELECT COUNT(*) FROM m4_doc_revision")).isEqualTo(1);
+        assertThat(count("SELECT COUNT(*) FROM m3_processing_job WHERE doc_revision_id IS NOT NULL"))
+                .isEqualTo(1);
+        assertThat(observedOrder(first.docId())).isEqualTo(1);
+    }
+
     @Test
     void redeliveryOfTheSameSourceOrderIsIdempotent() {
         String raw = GovernanceFixture.insertRawRecord(jdbc, "POST-3", "hash-same");
@@ -118,6 +165,12 @@ class RevisionOrderingIntegrationTest {
         return jdbc.queryForObject("""
                 SELECT current_doc_revision_id FROM m4_normalized_doc WHERE doc_id = ?
                 """, String.class, docId);
+    }
+
+    private String jobFor(String revisionId) {
+        return jdbc.queryForObject("""
+                SELECT job_id FROM m3_processing_job WHERE doc_revision_id = ?
+                """, String.class, revisionId);
     }
 
     private int count(String sql) {
