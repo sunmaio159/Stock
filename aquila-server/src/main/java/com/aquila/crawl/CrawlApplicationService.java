@@ -82,9 +82,8 @@ public class CrawlApplicationService {
             return new CrawlResult(existing, coverage.computeOverall(existing));
         }
         String runId = claim.runId();
-
-        String cursor = null;
-        int pageIndex = 0;
+        String cursor = claim.resumeCursor();
+        int pageIndex = claim.resumePageIndex();
         CoverageState lastState = null;
         while (true) {
             SourcePage page;
@@ -109,7 +108,7 @@ public class CrawlApplicationService {
             cursor = page.nextCursor();
             pageIndex++;
             if (page.terminal() || cursor == null) {
-                markRun(runId, "COMPLETE".equals(lastState.overallStatus()) ? "COMPLETE" : "PARTIAL");
+                markRun(runId, lastState.overallStatus());
                 break;
             }
         }
@@ -118,16 +117,22 @@ public class CrawlApplicationService {
 
     private RunClaim beginRun(String sourceCode, String runKey) {
         return transactions.execute(status -> {
-            List<String> existing = jdbc.query(
-                    "SELECT run_id FROM m3_task_instance WHERE source_code = ? AND run_key = ?",
-                    (resultSet, rowNumber) -> resultSet.getString("run_id"), sourceCode, runKey);
-            if (!existing.isEmpty()) {
-                return null;
-            }
+            // An existing run_key means this interval was already attempted. A COMPLETE interval
+            // is idempotent: honour the stored verdict and do not re-crawl. Any other terminal or
+            // interrupted state is resumed from the last committed page.
+            List<RunRow> existing = jdbc.query(
+                    "SELECT run_id, state, cursor_after FROM m3_task_instance"
+                            + " WHERE source_code = ? AND run_key = ?",
+                    (resultSet, rowNumber) -> new RunRow(
+                            resultSet.getString("run_id"),
+                            resultSet.getString("state"),
+                            resultSet.getString("cursor_after")),
+                    sourceCode, runKey);
             // The claim must be serialised: a non-locking read lets two workers compute the
             // same next fencing token, which destroys the monotonicity fencing relies on.
             List<LeaseRow> leases = jdbc.query(
-                    "SELECT lease_owner, lease_until, fencing_token FROM m3_source_config WHERE source_code = ? FOR UPDATE",
+                    "SELECT lease_owner, lease_until, fencing_token FROM m3_source_config"
+                            + " WHERE source_code = ? FOR UPDATE",
                     (resultSet, rowNumber) -> new LeaseRow(
                             resultSet.getString("lease_owner"),
                             resultSet.getTimestamp("lease_until") == null
@@ -150,6 +155,24 @@ public class CrawlApplicationService {
             if (claimed != 1) {
                 throw new ApiException(HttpStatus.CONFLICT, "Source lease claim conflict");
             }
+            if (!existing.isEmpty()) {
+                RunRow prior = existing.get(0);
+                if ("COMPLETE".equals(prior.state())) {
+                    return null;
+                }
+                // Resume: continue from the last successfully committed page rather than
+                // restarting at page 0. Re-issue the freshly claimed lease to the reused run so
+                // its page commits still satisfy the fencing CAS.
+                jdbc.update("""
+                        UPDATE m3_task_instance
+                        SET state = 'RUNNING', fencing_token = ?, lease_owner = ?, lease_until = ?,
+                            updated_at = NOW(6)
+                        WHERE run_id = ?
+                        """, issuedToken, leaseOwner, now.plus(leaseDuration), prior.runId());
+                ResumePoint resume = computeResumePoint(prior.runId());
+                return new RunClaim(prior.runId(), issuedToken, leaseOwner,
+                        resume.cursor(), resume.pageIndex(), true);
+            }
             String runId = UUID.randomUUID().toString();
             jdbc.update("""
                     INSERT INTO m3_task_instance
@@ -157,8 +180,27 @@ public class CrawlApplicationService {
                          fencing_token, lease_owner, lease_until, created_at, updated_at)
                     VALUES (?, ?, ?, 1, 'RUNNING', NULL, ?, ?, ?, NOW(6), NOW(6))
                     """, runId, sourceCode, runKey, issuedToken, leaseOwner, now.plus(leaseDuration));
-            return new RunClaim(runId, issuedToken, leaseOwner);
+            return new RunClaim(runId, issuedToken, leaseOwner, null, 0, false);
         });
+    }
+
+    /**
+     * Where a resumed run should continue: the cursor and page index just after the last page
+     * that committed a non-null cursor (a terminal page has a null cursor, so it is not used as a
+     * resume anchor).
+     */
+    private ResumePoint computeResumePoint(String runId) {
+        List<PageRow> rows = jdbc.query(
+                "SELECT page_index, cursor_after FROM m3_coverage_fact"
+                        + " WHERE run_id = ? AND cursor_after IS NOT NULL ORDER BY page_index DESC LIMIT 1",
+                (resultSet, rowNumber) -> new PageRow(
+                        resultSet.getInt("page_index"), resultSet.getString("cursor_after")),
+                runId);
+        if (rows.isEmpty()) {
+            return new ResumePoint(null, 0);
+        }
+        PageRow last = rows.get(0);
+        return new ResumePoint(last.cursorAfter(), last.pageIndex() + 1);
     }
 
     private CoverageState commitPage(
@@ -283,7 +325,14 @@ public class CrawlApplicationService {
     }
 
     private record LeaseRow(String leaseOwner, Instant leaseUntil, long fencingToken) {}
+    private record RunRow(String runId, String state, String cursorAfter) {}
+    private record PageRow(int pageIndex, String cursorAfter) {}
+    private record ResumePoint(String cursor, int pageIndex) {}
 
-    /** Lease identity issued to one run; page commits must present it unchanged to succeed. */
-    private record RunClaim(String runId, long fencingToken, String leaseOwner) {}
+    /** Lease identity issued to one run; page commits must present it unchanged to succeed.
+     * For a resumed run, {@code resumeCursor}/{@code resumePageIndex} point at the next page to
+     * fetch and {@code resumed} is true. */
+    private record RunClaim(
+            String runId, long fencingToken, String leaseOwner,
+            String resumeCursor, int resumePageIndex, boolean resumed) {}
 }

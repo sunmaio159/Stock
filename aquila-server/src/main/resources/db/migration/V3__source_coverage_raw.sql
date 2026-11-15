@@ -1,7 +1,8 @@
 -- Stage C Task 1: source policy, coverage, raw, and durable jobs.
 -- Owning migration for m3_* objects per docs/database/schema-v1.md.
--- V3 has been rewritten in place twice (round-2 permission columns, round-4 page_terminal),
--- so its checksum changes each time: every replay must run against a fresh empty schema.
+-- V3 has been rewritten in place three times (round-2 permission columns, round-4
+-- page_terminal, 1.x I4/I5 state-check + NOT NULL), so its checksum changes each time:
+-- every replay must run against a fresh empty schema.
 
 CREATE TABLE m3_source_config (
     source_code               VARCHAR(32)  NOT NULL,
@@ -51,7 +52,7 @@ CREATE TABLE m3_task_instance (
     updated_at      DATETIME(6)  NOT NULL,
     PRIMARY KEY (run_id),
     UNIQUE KEY uk_m3_task_run_key (source_code, run_key),
-    CONSTRAINT chk_m3_task_state CHECK (state IN ('CREATED', 'RUNNING', 'PARTIAL', 'COMPLETE', 'FAILED')),
+    CONSTRAINT chk_m3_task_state CHECK (state IN ('CREATED', 'RUNNING', 'PARTIAL', 'COMPLETE', 'FAILED', 'UNKNOWN', 'UNRECOVERABLE')),
     INDEX idx_m3_task_source_state (source_code, state)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -61,8 +62,8 @@ CREATE TABLE m3_coverage_fact (
     run_id                   VARCHAR(36)  NOT NULL,
     subscription_scope       VARCHAR(64)  NOT NULL,
     subscription_version     INT          NOT NULL,
-    business_interval_start  DATETIME(6)  NULL,
-    business_interval_end    DATETIME(6)  NULL,
+    business_interval_start  DATETIME(6)  NOT NULL,
+    business_interval_end    DATETIME(6)  NOT NULL,
     cursor_before            VARCHAR(256) NULL,
     cursor_after             VARCHAR(256) NULL,
     coverage_status          VARCHAR(16)  NOT NULL,
@@ -105,7 +106,7 @@ CREATE TABLE m3_processing_job (
     fetched_date        DATE         NULL,
     stage               VARCHAR(32)  NOT NULL,
     processor_version   VARCHAR(32)  NOT NULL,
-    input_revision      VARCHAR(64)  NULL,
+    input_revision      VARCHAR(64)  NOT NULL,
     state               VARCHAR(16)  NOT NULL,
     lease_owner         VARCHAR(64)  NULL,
     lease_until         DATETIME(6)  NULL,

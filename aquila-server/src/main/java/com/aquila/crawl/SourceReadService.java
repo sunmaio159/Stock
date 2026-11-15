@@ -1,10 +1,14 @@
 package com.aquila.crawl;
 
+import com.aquila.common.ApiException;
 import com.aquila.sourcepolicy.Permission;
 import com.aquila.sourcepolicy.SourcePolicy;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -64,5 +68,33 @@ public class SourceReadService {
                         resultSet.getString("evidence_reference"),
                         resultSet.getTimestamp("observed_at").toInstant()),
                 sourceCode);
+    }
+
+    /**
+     * Deterministic collection window for a manual "collect" trigger that does not specify an
+     * interval. Derived from the source's subscription effective range so that repeated operator
+     * triggers over the same business interval share a run_key (idempotency / resume), instead of
+     * each call inventing a unique {@code Instant.now()} interval. A null {@code effective_to}
+     * falls back to a one-day window anchored at {@code effective_from}.
+     */
+    public record SourceInterval(Instant start, Instant end) {}
+
+    public SourceInterval collectionInterval(String sourceCode) {
+        policy.require(Permission.ACCESS, sourceCode);
+        List<SourceInterval> rows = jdbc.query(
+                "SELECT subscription_effective_from, subscription_effective_to"
+                        + " FROM m3_source_config WHERE source_code = ?",
+                (resultSet, rowNumber) -> new SourceInterval(
+                        resultSet.getTimestamp("subscription_effective_from").toInstant(),
+                        resultSet.getTimestamp("subscription_effective_to") == null
+                                ? null : resultSet.getTimestamp("subscription_effective_to").toInstant()),
+                sourceCode);
+        if (rows.isEmpty()) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "source not found: " + sourceCode);
+        }
+        SourceInterval row = rows.get(0);
+        Instant start = row.start();
+        Instant end = row.end() == null ? start.plus(Duration.ofDays(1)) : row.end();
+        return new SourceInterval(start, end);
     }
 }

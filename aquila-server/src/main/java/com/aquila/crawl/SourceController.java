@@ -3,7 +3,6 @@ package com.aquila.crawl;
 import com.aquila.common.AdminApi;
 import com.aquila.common.Result;
 import jakarta.servlet.http.HttpServletRequest;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -51,9 +50,13 @@ public class SourceController {
             @RequestParam(name = "end", required = false) String end,
             HttpServletRequest request) {
         return api.respond(request, () -> {
-            Instant endInstant = end == null ? Instant.now() : Instant.parse(end);
-            Instant startInstant = start == null
-                    ? endInstant.minus(Duration.ofDays(1)) : Instant.parse(start);
+            // A manual trigger that omits the interval must still map to a deterministic,
+            // source-derived window (the source's effective range) so repeated triggers over the
+            // same business interval share a run_key (idempotency / resume). An explicit interval
+            // always wins.
+            SourceReadService.SourceInterval interval = read.collectionInterval(code);
+            Instant endInstant = end == null ? interval.end() : Instant.parse(end);
+            Instant startInstant = start == null ? interval.start() : Instant.parse(start);
             return crawl.runCollection(
                     code, scope == null ? "DEFAULT" : scope, startInstant, endInstant);
         });

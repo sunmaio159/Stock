@@ -885,7 +885,10 @@ the proof and that the counterexample tests fail when it is removed). The G-1 mi
 which round 3 had correctly left to the owner — was issued by the owner (`63d4090`, edit `V3` in
 place) and executed in round 4. Still open as owner-governance decisions, independent of this
 task's correctness: I3–I8 and their Task 1 / Task 2 attribution, and the `m3_processing_job`
-versus `m4_processing_job` naming deviation.
+versus `m4_processing_job` naming deviation. **Resolved 2026-11-15 by owner signature (see
+§Stage C Task 1 — 1.x fix): A1 — I3/I4/I5 fixed in the 1.x commit, I6/I7/I8 deferred to an
+independent hardening pass; B1 — `m3_processing_job` is canonical (no rename, no V5 consumption);
+C1 — `aquila_migrate` Flyway `clean` is the default isolated-schema reset path.**
 
 Earlier in the same day a first review round and the owner's fixes addressed: a blocking
 compile error in `SourcePolicy` (`query` → `queryForObject`, which also made the
@@ -969,3 +972,85 @@ The local `.env` is never committed (`.gitignore` ignores `.env`). It mirrors
 | `STOCK_MYSQL_IT_FLYWAY_URL` | Flyway JDBC URL | same host/path as runtime URL |
 | `STOCK_MYSQL_IT_FLYWAY_USER` / `_PASSWORD` | Flyway account (DDL) | `aquila_migrate` / `Am1_***` |
 | `STOCK_TOTP_ENCRYPTION_KEY` | TOTP envelope key (Base64, 32 bytes) | canonical provision value (`AebY***`) — **not** a placeholder; the two Stage C IT classes do not exercise real TOTP encrypt/decrypt, so any valid 32-byte key is acceptable |
+
+## Stage C Task 1 — 1.x fix: I3/I4/I5 implemented, I6/I7/I8 deferred, C1 reset (2026-11-15)
+
+Owner-signed decisions (2026-11-15) that govern this fix: **A1** — I3/I4/I5 belong to
+Task 1 and are fixed here; I6/I7/I8 are deferred to an independent hardening pass and must
+not be absorbed by Task 2. **B1** — the physical table name `m3_processing_job` is canonical
+(no rename; see `docs/database/schema-v1.md` line 43). **C1** — `aquila_migrate` Flyway `clean`
+is the default isolated-schema reset path (replacing the earlier admin `drop/recreate`).
+
+### I3 / I4 / I5 — implemented (red first, then green)
+
+- **I3 — failed-page resume.** `CrawlApplicationService.beginRun` no longer short-circuits on a
+  matching `run_key`: a `COMPLETE` interval is still honoured idempotently (returns the stored
+  verdict, no re-crawl), but any other state is *resumed* from the last committed page
+  (`computeResumePoint` reads the highest `page_index` whose `cursor_after IS NOT NULL`). The
+  reused `run_id` is re-issued the freshly claimed lease so its page commits still satisfy the
+  fencing CAS. `CoverageService.commitPage` now `INSERT ... ON DUPLICATE KEY UPDATE` on
+  `uk_m3_coverage_run_page`, so a resumed page replaces its earlier PARTIAL fact instead of
+  colliding. Sub-item (b): `SourceController.collect` no longer derives the default interval
+  from `Instant.now()`; it delegates to the new `SourceReadService.collectionInterval(code)`,
+  a deterministic window from the source's subscription effective range, so repeated operator
+  triggers over the same business interval share a `run_key` (idempotency / resume).
+- **I4 — four-state run verdict.** `runCollection` now writes `markRun(runId, overallStatus())`
+  instead of folding `UNKNOWN`/`UNRECOVERABLE` into `PARTIAL`; `chk_m3_task_state` in V3 now
+  accepts those two states, so a terminal, untraceable run is recorded as `UNKNOWN`, not
+  `PARTIAL`.
+- **I5 — DDL backstops the invariants.** V3 was rewritten in place a third time (checksum
+  changes, so every replay is against a fresh empty schema — see §C1 below):
+  `m3_processing_job.input_revision` and `m3_coverage_fact.business_interval_start/end` are
+  now `NOT NULL`. The earlier nullable columns let code that depends on these keys compile and
+  run while silently violating the idempotency / coverage-proof invariants.
+
+Falsifying tests (`CrawlResumptionIntegrationTest`, new): a failed-page resume must reach
+`COMPLETE` (I3 case 6), the deterministic default interval must be source-derived and shared
+(I3 sub-item b), a terminal-untraceable run must be `UNKNOWN` not `PARTIAL` (I4), and both NOT
+NULL columns must reject `NULL` inserts (I5 × 2). All six new tests were observed red against
+the pre-fix code and green after the fix.
+
+### I6 / I7 / I8 — deferred (owner decision 2026-11-15, A1)
+
+These do not touch the Task 2 semantic foundation, so they are explicitly parked in an
+independent hardening pass rather than folded into Task 1 or Task 2. Each is recorded with the
+test that should turn red once the fix lands, to prevent the debt from whitening:
+
+- **I6 — unbounded `/coverage` listing.** `SourceController` returns every run's facts with no
+  `page/size`, and the Vue view keys rows by `pageIndex`, so a repeated run can duplicate a key
+  and a stale run can masquerade as current. *Should turn red:* an IT that inserts two runs for
+  the same source and asserts the listing is paginated (default page size) and each row carries a
+  stable, unique run-scoped key (not `pageIndex` alone).
+- **I7 — unbounded crawl/recovery loops.** `runCollection` uses `while (true)` and `recover()`
+  scans without a bound. *Should turn red:* an IT whose fixture adapter yields a cycle / a
+  non-terminating cursor chain and asserts the run aborts after a configured maximum pages or
+  elapsed budget instead of looping forever.
+- **I8 — no injected `Clock`.** Five `Instant.now()` / `NOW(6)` writes are mixed with no
+  injected clock, so timezone regressions are invisible to tests. *Should turn red:* an IT that
+  runs two crawls with a clock shifted by a non-UTC offset and asserts the recorded
+  `observed_at` / `created_at` equal the injected instant (not server-local now).
+
+### C1 — reset path and discipline (owner decision 2026-11-15)
+
+`aquila_migrate` Flyway `clean` is now the default reset path for the isolated schema
+`stock_greenfield_20261109`. It replaces the earlier admin `drop/recreate`. The
+`flyway-maven-plugin` is pinned in `aquila-server/pom.xml` with `cleanDisabled=false`, and its
+`url`/`user`/`password` are interpolated from `STOCK_MYSQL_IT_FLYWAY_*` env vars (so the URL —
+which contains `&` — never appears on a command line, avoiding shell splitting). The
+`aquila_migrate` grant is scoped to the single isolated schema; `FlywayMigrationTargetPolicy`
+rejects any other schema, and the earlier `drop/recreate` admin route is reserved only for the
+one-time provision.
+
+**Discipline:** before any `clean`, verify the JDBC URL points at the authorised isolated
+schema (`stock_greenfield_20261109`) — never a production or other target. Admin credentials
+are used only for the one-time `CREATE DATABASE` / `CREATE USER` / `GRANT`; `DROP`/`CREATE
+DATABASE` never runs under `aquila_migrate`.
+
+### Verification (2026-11-15)
+
+- Focused IT (reset via C1, new V3 replay): `CrawlResumptionIntegrationTest` 6/6,
+  `CoverageServiceTest` 4/4, `CrawlRecoveryIntegrationTest` 7/7 → **17/0, BUILD SUCCESS**.
+- Full backend suite: **155 run, 0 failures, 0 errors, 67 skipped** (the 67 are the mysql-it IT
+  classes excluded without `-Pmysql-it`); same-origin jar built.
+- Frontend four gates: `typecheck`, `openapi:lint` (valid), `build` — all pass.
+- No regression in the prior crawl/coverage ITs.

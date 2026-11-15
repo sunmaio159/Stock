@@ -34,6 +34,17 @@ public class CoverageService {
                      coverage_status, reason, adapter_contract_version, evidence_reference,
                      observed_at, page_index, page_terminal, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(6))
+                ON DUPLICATE KEY UPDATE
+                    coverage_status = VALUES(coverage_status),
+                    reason = VALUES(reason),
+                    cursor_before = VALUES(cursor_before),
+                    cursor_after = VALUES(cursor_after),
+                    business_interval_start = VALUES(business_interval_start),
+                    business_interval_end = VALUES(business_interval_end),
+                    evidence_reference = VALUES(evidence_reference),
+                    observed_at = VALUES(observed_at),
+                    page_terminal = VALUES(page_terminal),
+                    adapter_contract_version = VALUES(adapter_contract_version)
                 """,
                 UUID.randomUUID().toString(),
                 commit.sourceCode(),

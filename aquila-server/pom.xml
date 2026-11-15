@@ -94,6 +94,17 @@
           </systemPropertyVariables>
         </configuration>
       </plugin>
+      <plugin>
+        <groupId>org.flywaydb</groupId>
+        <artifactId>flyway-maven-plugin</artifactId>
+        <version>${flyway.version}</version>
+        <configuration>
+          <cleanDisabled>false</cleanDisabled>
+          <url>${env.STOCK_MYSQL_IT_FLYWAY_URL}</url>
+          <user>${env.STOCK_MYSQL_IT_FLYWAY_USER}</user>
+          <password>${env.STOCK_MYSQL_IT_FLYWAY_PASSWORD}</password>
+        </configuration>
+      </plugin>
     </plugins>
   </build>
 
