@@ -1282,3 +1282,42 @@ co-author trailer and stage only Task 2 paths.
 "Scope note"); Stage D items — injectable `Clock` for `SourcePolicy.require`, dead-letter
 retry cap, source-row X-lock throughput, confirm the partial `LifecycleGuard` capability set;
 and the FT-02 "truly interleaved receive commits" gap documented in `task-2-brief.md` §8.
+
+## Stage D Task 1 — mechanism layer (2026-11-15)
+
+Owner instruction "继续推进阶段任务" after the Chinese login-page localisation. This is an
+**implementation record, not task acceptance**.
+
+- **Step 1 remains OPEN.** Unified plan §9.1/§9.2 require the PO to freeze the labelled
+  evaluation set, label/score mapping, confidence interpretation, low-confidence
+  threshold, multi-security eligibility rules and aggregation weights/decay before any
+  dictionary is published or online publication is enabled. No business dictionary,
+  threshold or weight was invented: all values arrive through explicit versioned snapshots
+  (`DictionarySnapshot` / `AlgorithmSnapshot` / `AggregationPolicy`), and a missing value
+  fails closed. No production dictionary/algorithm/policy rows were inserted; no
+  precision/recall/F1, coverage or quality claim is made. Task 1 Steps 1–5 stay `[ ]`.
+- **Delivered:** `V5__sentiment_versions_and_windows.sql` (version tables, per-revision
+  result with NULL-unknown + range + exclusion CHECKs, version-keyed window with three
+  distinct counters, dirty-window generation); `com.aquila.sentiment` engine/aggregation
+  (deterministic longest-match rules, unknown NULL≠0, explicit eligibility); three test
+  classes. V6 / Task 2 still owns change log, version state and publication barrier.
+- **Interface deviation:** `evaluate(DocumentRevision, DictionarySnapshot)` became
+  `evaluate(SentimentInput, DictionarySnapshot, AlgorithmSnapshot)` because Stage C stores
+  only `body_hash` plus a raw reference, not document text (V4 is applied and must not be
+  edited). `DictionaryView.vue` / `openapi.yaml` are recorded as Stage D deferred in the
+  plan Scope note; no product API/UI was invented. See
+  `.superpowers/sdd/2026-11-09-zero-based-stage-d/task-1-brief.md`.
+- **Falsification:** stubs gave 12 red / 14; implementation gave **20/20** (8 engine +
+  6 aggregation + 6 MySQL 8.4 constraint IT). Removing four Java guards gave exactly
+  6 red; relaxing `chk_m5_result_unknown` to a tautology gave exactly 1 red
+  (`halfZeroUnknownResultIsRejected`); restoring produced green with no probe leftovers.
+- **Verification:** C1 `flyway:clean` + V1–V5 replay on the isolated
+  `stock_greenfield_20261109` (now at `v5`; V1–V4 checksums unchanged); focused 20/20;
+  full `-Pmysql-it` backend **194/194** with
+  `-DargLine=-Dspring.test.context.cache.maxSize=4`; frontend four gates all pass.
+  `FlywayMySqlIntegrationTest` remains excluded from the full command (empty-schema gate)
+  and was not run separately in this pass; the empty-schema replay was performed by the
+  C1 clean + plugin migrate instead.
+- G02 / COV-01 / G05 remain `OPEN`; LIFE-01 unchanged. This record closes no stage gate
+  and is not an owner decision.
+

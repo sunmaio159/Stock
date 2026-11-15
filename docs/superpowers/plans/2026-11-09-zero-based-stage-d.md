@@ -46,6 +46,19 @@
 - Consumes: Stage C immutable document revisions, mentions, lifecycle and coverage evidence.
 - Produces: `SentimentEngine.evaluate(DocumentRevision, DictionarySnapshot): SentimentResult`; `AggregationService.rebuild(WindowKey, AnalysisVersion): WindowResult`.
 
+**Scope note (2026-11-15, mechanism layer):** Step 1 is **not signed** — unified plan
+§9.1/§9.2 make the labelled evaluation set, label/score mapping, confidence interpretation,
+low-confidence threshold, multi-security eligibility rules and aggregation weights/decay
+PO decisions. The current pass delivers only the mechanism that consumes those values as
+explicit versioned inputs, plus `V5__sentiment_versions_and_windows.sql` and three test
+classes. No business dictionary, threshold or weight was invented, no production version
+rows were inserted, no online publication was enabled, and Steps 1–5 stay `[ ]`.
+`DictionaryView.vue` and `docs/api/openapi.yaml` remain listed above but are **deferred**
+(no Step defines an endpoint/UI action and no frozen dictionary content exists yet) — same
+treatment as Stage C's `PostsView.vue`; no product API/UI was invented. Interface deviation
+(`DocumentRevision` carries `body_hash` + raw reference, not text) and the full as-built
+record: `.superpowers/sdd/2026-11-09-zero-based-stage-d/task-1-brief.md`.
+
 - [ ] **Step 1: Freeze analysis and aggregation parameters**
 
 PO approves label/score mapping, confidence interpretation, multi-security eligibility rules and aggregation policy version; record a fixed labeled evaluation set.
