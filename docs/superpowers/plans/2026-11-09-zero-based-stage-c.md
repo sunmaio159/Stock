@@ -97,20 +97,22 @@ confirms the removal, so the discrepancy stays visible rather than silently disa
 **Interfaces:**
 - Produces: `RevisionService.receive(ObservedDocument): DocumentRevision`; `ProcessingJobWorker.process(JobLease): JobOutcome`; conditional latest-observed/processed pointers and mention records per immutable revision.
 
-- [ ] **Step 1: Add failing ordering and lifecycle-race tests**
+- [x] **Step 1: Add failing ordering and lifecycle-race tests**
 
 Force R1 to finish after R2; change securities mentions during revision; expire/revoke while worker computes; assert lower-order pointer update and stale lifecycle commit are rejected.
 
-- [ ] **Step 2: Add immutable revision and processing schema (V4 boundary)**
+- [x] **Step 2: Add immutable revision and processing schema (V4 boundary)**
 
 Persist in `V4__document_processing.sql`, as built (the logical ownership map in `docs/database/schema-v1.md` pre-allocated these to V5 and now carries `as built; was V5` annotations): source identity, revision order, raw references, business/published/observed timestamps, parser versions, current pointers, mentions, quality, and lifecycle version. Reuse/extend the V3 `m3_processing_job` for durable jobs, retries, and dead letters — it already carries `DEAD_LETTER` state plus `retry_count` and `last_error`, so **no separate dead-letter table** is created (owner decision 2026-11-15). Do **not** build the full commit-ordered change log or aggregation windows here; those belong to Stage D (`V5`/`V6`). Keep all V4 tables in a single migration to avoid cross-migration FK ordering, referencing the already-existing `m3_raw_record` (+ partition date) and `m2_security` from V1–V3.
 
-- [ ] **Step 3: Implement ordered revision receive and worker fencing**
+- [x] **Step 3: Implement ordered revision receive and worker fencing**
 
 Prefer reliable source revision sequence; otherwise assign local observation order transactionally. Commit pointer advancement and affected dirty marks together; require current fencing token and lifecycle version before derived writes.
 
-- [ ] **Step 4: Verify FT-02/FT-03 and commit**
+- [x] **Step 4: Verify FT-02/FT-03 and commit**
 
 Run: `mvn -f aquila-server/pom.xml -Pmysql-it -Dtest=RevisionOrderingIntegrationTest,LifecycleRaceIntegrationTest test`
 
 Expected: PASS with no pointer rollback or post-revocation resurrection. Run full backend tests, frontend tests/build, OpenAPI lint; update G02/COV-01/LIFE-01 evidence. Commit `feat: add immutable revisions and lifecycle guards` with required trailer.
+
+**Completed and accepted 2026-11-15.** The implementation commit `e1b85c4` carries the required trailer, but its green gates were explicitly not acceptance evidence: independent review round 1 returned `With fixes` (5 Important), round 2 returned `With fixes` again (I-5 had no falsifying test and a REPEATABLE READ regression), and the third review over `1f79bec..67bd667` returned **APPROVED — Ready to merge: Yes** (`.superpowers/sdd/2026-11-09-zero-based-stage-c/task-2-review-report-round3.md`). Fix commits `1f79bec` and `67bd667` each carry the trailer and stage only Task 2 paths. Final verification: empty-schema gate 1/1 after C1 `flyway:clean`, V1–V4 replay to `v4`, full `-Pmysql-it` backend **174/174** on MySQL 8.4, frontend four gates, no falsification-probe leftovers. Registry `C-T2-01` → `PASSED`. **Stage C Task 2: ACCEPTED / CLOSED** (implementation review closure only). G02 / COV-01 remain `OPEN`; LIFE-01 has C-stage initial evidence and stays `OPEN` pending the Stage F residue scan. `PostsView.vue` / `openapi.yaml` are Stage D deferred under the Files "Scope note" and are **not** part of this acceptance; owner sign-off on removing those lines is still pending. Five non-blocking round-3 Minor items are recorded in `docs/evidence/greenfield/README.md` §Round 3 for a follow-up hygiene pass.

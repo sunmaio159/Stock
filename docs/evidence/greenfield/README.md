@@ -1168,10 +1168,11 @@ barrier, and four IT classes (FT-02 3, FT-03 3, constraint 4). As-built spec:
   recompute-marker invariants. The Stage F residue scan and recovery report are still pending,
   so the register item is not passed.
 
-**Registry `C-T2-01`:** implementation complete and gates green, but **still `OPEN`** — Stage C
-Task 1 required four review rounds before `C-T1-01` could move to `PASSED`, so a green test run
-alone is not acceptance evidence. Independent review round 1 returned `With fixes` (below);
-Task 2 Steps stay `[ ]` until a review is `APPROVED`. Neither commit is a closure marker.
+**Registry `C-T2-01`:** → **`PASSED`** after the third independent review returned `APPROVED`
+(2026-11-15; see Round 3 below). Stage C Task 1 required four review rounds before `C-T1-01`
+could move to `PASSED`, so a green test run alone was never treated as acceptance evidence here
+either: rounds 1 and 2 both returned `With fixes`, and Task 2 Steps stayed `[ ]` until round 3.
+This is implementation review closure only — not G02–G05, not C–F stage acceptance.
 
 **Committed:** `e1b85c4 feat: add immutable revisions and lifecycle guards` with the required
 co-author trailer, staging only Task 2 paths; unrelated `落地文档设计/` working-tree changes are
@@ -1187,7 +1188,8 @@ write/verify expressions are byte-identical including NULL handling, `receive()`
 the doc row lock so pointers stay monotone, the terminal-state UPDATE cannot overwrite a
 reclaimed job, and the trigger failure is disclosed honestly.
 
-All five Important issues are fixed in the follow-up commit:
+Four of the five Important issues were closed in the round-1 follow-up commit (`1f79bec`);
+I-5 was closed in the round-2 pass (`67bd667`, below):
 
 | # | Finding | Fix |
 |---|---|---|
@@ -1214,7 +1216,7 @@ fix pass. Focused governance + Task 1 recovery regression **24/24**; full backen
 **Deliberately left open (not dropped):** source-row X-lock contention / lock-order divergence
 vs the crawl path, and the partial capability set in `LifecycleGuard` — both recorded as Stage D
 notes. The plan Files-list discrepancy (`PostsView.vue` / `openapi.yaml`) still needs owner
-sign-off. `C-T2-01` remains `OPEN` until a review returns `APPROVED`.
+sign-off. `C-T2-01` moved to `PASSED` only after round 3 returned `APPROVED`.
 
 ### Stage C Task 2 — independent review round 2 and fix pass (2026-11-15)
 
@@ -1249,3 +1251,34 @@ closed, and the fix pass introduced a concurrency regression.
 no probe leftovers. Source-row lock contention,
 the partial `LifecycleGuard` capability set and the plan Files-list discrepancy remain recorded
 as Stage D / owner sign-off items.
+
+### Stage C Task 2 — independent review round 3: APPROVED / closure (2026-11-15)
+
+Round-3 report: `.superpowers/sdd/2026-11-09-zero-based-stage-c/task-2-review-report-round3.md`,
+diff `review-1f79bec..67bd667.diff`. Verdict **APPROVED — Ready to merge: Yes**: no Critical,
+no Important, both round-2 Importants CLOSED, no new blocking issue. The reviewer confirmed
+the RR fix is sound by InnoDB semantics (locking read first, ReadView created only after
+doc-row-lock serialisation), §8.1 point-of-use is preserved via the same entry-gate +
+in-transaction re-check pattern that closed Task 1's F-1, lock order has no inversion with the
+crawl path, and the residual TOCTOU is covered by the commit barrier.
+
+**Registry `C-T2-01` → `PASSED`. Stage C Task 2: ACCEPTED / CLOSED** (implementation review
+closure only; G02/COV-01 remain `OPEN`, LIFE-01 retains C-stage initial evidence pending the
+Stage F residue scan). Commits `e1b85c4`, `1f79bec`, `67bd667` each carry the required
+co-author trailer and stage only Task 2 paths.
+
+**Five non-blocking Minor items, recorded not dropped:**
+
+| # | Item | Disposition |
+|---|---|---|
+| M-1 | `recover()` bookkeeping `UPDATE` has only `WHERE job_id = ?` (no state/fencing predicate), and its own failure could abort the batch | Bounded: diagnostic columns only, cannot steal/resurrect/double-process. Follow-up hygiene commit |
+| M-2 | the two policy ITs do not assert `m4_normalized_doc` / mention / quality / marker are empty | They prove "at least one `require` exists", not strictly "before any write". Follow-up test precision |
+| M-3 | the concurrency IT uses a single start latch and does not assert duplicate marker/mention/quality absence | Adequate and consistent with the APPROVED `CrawlStaleLeaseIntegrationTest` pattern; `CyclicBarrier` + extra assertions optional |
+| M-4 | round-1 section header overclaim | Corrected above in this pass |
+| M-5 | brief §7 round-1 table / §3 test counts are historical | Label as "as of round 1" or refresh |
+
+**Still outstanding outside this task's acceptance:** owner sign-off to remove the
+`PostsView.vue` / `openapi.yaml` lines from the plan Files list (Stage D deferred, see plan
+"Scope note"); Stage D items — injectable `Clock` for `SourcePolicy.require`, dead-letter
+retry cap, source-row X-lock throughput, confirm the partial `LifecycleGuard` capability set;
+and the FT-02 "truly interleaved receive commits" gap documented in `task-2-brief.md` §8.
