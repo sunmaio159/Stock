@@ -5,38 +5,43 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.aquila.auth.AuthMySqlCondition;
 import com.aquila.common.ApiException;
+import com.aquila.crawl.ProcessingJobWorker;
 import com.aquila.governance.GovernanceFixture;
 import com.aquila.governance.RevisionService;
 import com.aquila.masterdata.MasterDataFixture;
-import com.aquila.sentiment.SentimentModel.AggregationPolicy;
-import com.aquila.sentiment.SentimentModel.AggregationSample;
-import com.aquila.sentiment.SentimentModel.AnalysisVersion;
 import com.aquila.sentiment.SentimentModel.Eligibility;
 import com.aquila.sentiment.SentimentModel.SentimentResult;
 import com.aquila.sentiment.SentimentModel.WindowResult;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Persistence integration on real MySQL 8.4 for the parameter-independent store: a result
- * written once per (revision, engine level, algorithm, dictionary) tuple, an identical
- * replay that is a no-op, a conflicting replay that is refused because results are
- * immutable, and version-keyed windows that a rebuild replaces in place while a different
- * analysis version stays a separate row (never spliced).
+ * written once per (revision, engine level, algorithm, dictionary) tuple behind the full
+ * Stage C lifecycle barrier, an identical replay that is a no-op, a conflicting replay
+ * that is refused because results are immutable, numeric payloads beyond the column
+ * precision that are normalised instead of manufacturing a conflict, and version-keyed
+ * windows that a rebuild replaces in place while a different analysis version stays a
+ * separate row (never spliced).
  *
- * <p>No PO-owned value appears here: score, confidence, thresholds and eligibility all come
- * from the explicit test-local snapshots in {@link SentimentFixture}.
+ * <p>No PO-owned value appears here: score, confidence, thresholds and eligibility all
+ * come from the explicit test-local snapshots in {@link SentimentFixture}.
  */
 @ExtendWith(AuthMySqlCondition.class)
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
@@ -46,7 +51,10 @@ class SentimentPersistenceIntegrationTest {
 
     @Autowired private JdbcTemplate jdbc;
     @Autowired private RevisionService revisions;
+    @Autowired private ProcessingJobWorker worker;
     @Autowired private SentimentStore store;
+    @Autowired private SentimentAnalysisService analysis;
+    @Autowired private TransactionTemplate transactions;
 
     private final SentimentEngine engine = new SentimentEngine();
     private final AggregationService aggregation = new AggregationService();
@@ -63,18 +71,20 @@ class SentimentPersistenceIntegrationTest {
 
     @AfterEach
     void cleanup() {
+        analysis.setBeforeCommitHook(null);
         SentimentFixture.clear(jdbc);
     }
 
     @Test
     void unknownResultRoundTripsAsNullWithItsReason() {
-        String revisionId = SentimentFixture.newRevision(jdbc, revisions);
+        String revisionId = SentimentFixture.processedRevision(jdbc, revisions, worker);
         SentimentResult result = engine.evaluate(
                 SentimentFixture.input(revisionId, "no dictionary term here", GovernanceFixture.SECURITY_A),
                 SentimentFixture.dictionary(),
                 SentimentFixture.algorithm());
 
-        assertThat(store.persistResult(ENGINE_LEVEL, result)).isTrue();
+        assertThat(analysis.persistResult(
+                ENGINE_LEVEL, result, SentimentFixture.lifecycleVersion(jdbc, revisionId))).isTrue();
 
         Map<String, Object> row = onlyResult();
         assertThat(row.get("score")).isNull();
@@ -86,8 +96,8 @@ class SentimentPersistenceIntegrationTest {
 
     @Test
     void excludedAmbiguousResultKeepsItsOwnEvidenceAndReason() {
-        String revisionId = SentimentFixture.newRevision(
-                jdbc, revisions, GovernanceFixture.SECURITY_A, GovernanceFixture.SECURITY_B);
+        String revisionId = SentimentFixture.processedRevision(
+                jdbc, revisions, worker, GovernanceFixture.SECURITY_A, GovernanceFixture.SECURITY_B);
         SentimentResult result = engine.evaluate(
                 SentimentFixture.input(revisionId, "gain decline",
                         GovernanceFixture.SECURITY_A, GovernanceFixture.SECURITY_B),
@@ -95,7 +105,8 @@ class SentimentPersistenceIntegrationTest {
                 SentimentFixture.algorithm());
 
         assertThat(result.eligibility()).isEqualTo(Eligibility.AMBIGUOUS_MULTI_SECURITY);
-        assertThat(store.persistResult(ENGINE_LEVEL, result)).isTrue();
+        assertThat(analysis.persistResult(
+                ENGINE_LEVEL, result, SentimentFixture.lifecycleVersion(jdbc, revisionId))).isTrue();
 
         Map<String, Object> row = onlyResult();
         // Excluded from directional aggregation, but the document-level evidence stays.
@@ -107,26 +118,28 @@ class SentimentPersistenceIntegrationTest {
 
     @Test
     void replayingTheIdenticalResultIsANoOp() {
-        String revisionId = SentimentFixture.newRevision(jdbc, revisions);
+        String revisionId = SentimentFixture.processedRevision(jdbc, revisions, worker);
         SentimentResult result = evaluate(revisionId, "gain");
+        long version = SentimentFixture.lifecycleVersion(jdbc, revisionId);
 
-        assertThat(store.persistResult(ENGINE_LEVEL, result)).isTrue();
-        assertThat(store.persistResult(ENGINE_LEVEL, result)).isFalse();
+        assertThat(analysis.persistResult(ENGINE_LEVEL, result, version)).isTrue();
+        assertThat(analysis.persistResult(ENGINE_LEVEL, result, version)).isFalse();
         assertThat(resultCount()).isEqualTo(1);
     }
 
     @Test
     void conflictingReplayForTheSameVersionTupleIsRefused() {
-        String revisionId = SentimentFixture.newRevision(jdbc, revisions);
+        String revisionId = SentimentFixture.processedRevision(jdbc, revisions, worker);
         SentimentResult stored = evaluate(revisionId, "gain");
-        store.persistResult(ENGINE_LEVEL, stored);
+        long version = SentimentFixture.lifecycleVersion(jdbc, revisionId);
+        assertThat(analysis.persistResult(ENGINE_LEVEL, stored, version)).isTrue();
 
         SentimentResult conflicting = new SentimentResult(
                 stored.docRevisionId(), stored.algoVersion(), stored.dictVersion(),
                 new BigDecimal("99.00"), stored.confidence(), null, stored.eligibility(),
                 stored.exclusionReason(), stored.hitWords(), stored.oppositeStance());
 
-        assertThatThrownBy(() -> store.persistResult(ENGINE_LEVEL, conflicting))
+        assertThatThrownBy(() -> analysis.persistResult(ENGINE_LEVEL, conflicting, version))
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("immutable");
         assertThat(resultCount()).isEqualTo(1);
@@ -136,16 +149,78 @@ class SentimentPersistenceIntegrationTest {
                 .isEqualByComparingTo(stored.score());
     }
 
+    /**
+     * Review I-3: DECIMAL(6,2)/DECIMAL(5,4) columns silently round, so a payload beyond
+     * the column precision used to make an identical replay look like a conflict (the DB
+     * stored 10.00 while Java compared against 10.004). The store normalises before the
+     * write and before the comparison, so the replay is a no-op.
+     */
     @Test
-    void resultForAnUnknownRevisionIsRejectedByTheForeignKey() {
-        SentimentResult orphan = new SentimentResult(
-                "revision-that-does-not-exist", SentimentFixture.ALGO_VERSION,
-                SentimentFixture.DICT_VERSION, new BigDecimal("10.00"), new BigDecimal("0.5000"),
-                null, Eligibility.ELIGIBLE, null, List.of("gain"), false);
+    void overPrecisionPayloadIsNormalisedNotAConflict() {
+        String revisionId = SentimentFixture.processedRevision(jdbc, revisions, worker);
+        SentimentResult result = new SentimentResult(
+                revisionId, SentimentFixture.ALGO_VERSION, SentimentFixture.DICT_VERSION,
+                new BigDecimal("10.004"), new BigDecimal("0.50001"), null,
+                Eligibility.ELIGIBLE, null, List.of("gain"), false);
+        long version = SentimentFixture.lifecycleVersion(jdbc, revisionId);
 
-        assertThatThrownBy(() -> store.persistResult(ENGINE_LEVEL, orphan))
-                .isInstanceOf(DataAccessException.class);
-        assertThat(resultCount()).isZero();
+        assertThat(analysis.persistResult(ENGINE_LEVEL, result, version)).isTrue();
+        assertThat(analysis.persistResult(ENGINE_LEVEL, result, version)).isFalse();
+
+        assertThat(resultCount()).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                "SELECT score FROM m5_sentiment_result WHERE doc_revision_id = ?",
+                BigDecimal.class, revisionId))
+                .isEqualByComparingTo("10.00");
+        assertThat(jdbc.queryForObject(
+                "SELECT confidence FROM m5_sentiment_result WHERE doc_revision_id = ?",
+                BigDecimal.class, revisionId))
+                .isEqualByComparingTo("0.5000");
+    }
+
+    /**
+     * Review I-4: a replay running inside a REPEATABLE READ transaction whose snapshot
+     * predates the concurrent winner must still resolve the duplicate to a no-op. The
+     * replay opens its snapshot with a plain read, waits for the winner to commit, then
+     * replays; the store's duplicate-key readback is a current read (FOR UPDATE), so it
+     * sees the committed row. A plain readback keeps the old ReadView, misses the row and
+     * re-throws the duplicate — that is the red state.
+     */
+    @Test
+    void aReplayInsideAnOldSnapshotStillSeesTheCommittedWinner() throws Exception {
+        String revisionId = SentimentFixture.processedRevision(jdbc, revisions, worker);
+        SentimentResult result = evaluate(revisionId, "gain");
+        long version = SentimentFixture.lifecycleVersion(jdbc, revisionId);
+
+        CountDownLatch snapshotOpen = new CountDownLatch(1);
+        CountDownLatch winnerCommitted = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(1);
+        try {
+            Future<Boolean> replay = pool.submit(() -> transactions.execute(status -> {
+                // Plain read: establishes this transaction's REPEATABLE READ snapshot.
+                jdbc.queryForObject("SELECT COUNT(*) FROM m5_dict_version", Integer.class);
+                snapshotOpen.countDown();
+                try {
+                    assertThat(winnerCommitted.await(30, TimeUnit.SECONDS)).isTrue();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+                return analysis.persistResult(ENGINE_LEVEL, result, version);
+            }));
+
+            assertThat(snapshotOpen.await(30, TimeUnit.SECONDS)).isTrue();
+            // The winner commits after the replay snapshot was established.
+            assertThat(analysis.persistResult(ENGINE_LEVEL, result, version)).isTrue();
+            winnerCommitted.countDown();
+
+            assertThat(replay.get(30, TimeUnit.SECONDS))
+                    .as("the replay resolves to a no-op instead of re-throwing the duplicate")
+                    .isFalse();
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(resultCount()).isEqualTo(1);
     }
 
     @Test
@@ -155,10 +230,11 @@ class SentimentPersistenceIntegrationTest {
 
         store.persistWindow(aggregation.rebuild(
                 SentimentFixture.windowKey("15m"),
-                version("av-1", sample(first, 1, "20"))));
+                SentimentFixture.version("av-1", SentimentFixture.sample(first, "20"))));
         store.persistWindow(aggregation.rebuild(
                 SentimentFixture.windowKey("15m"),
-                version("av-1", sample(first, 1, "20"), sample(second, 1, "40"))));
+                SentimentFixture.version("av-1",
+                        SentimentFixture.sample(first, "20"), SentimentFixture.sample(second, "40"))));
 
         assertThat(windowCount()).isEqualTo(1);
         Map<String, Object> row = onlyWindow();
@@ -174,9 +250,11 @@ class SentimentPersistenceIntegrationTest {
     void anotherAnalysisVersionKeepsItsOwnWindowRow() {
         String revisionId = SentimentFixture.newRevision(jdbc, revisions);
         store.persistWindow(aggregation.rebuild(
-                SentimentFixture.windowKey("15m"), version("av-1", sample(revisionId, 1, "20"))));
+                SentimentFixture.windowKey("15m"),
+                SentimentFixture.version("av-1", SentimentFixture.sample(revisionId, "20"))));
         store.persistWindow(aggregation.rebuild(
-                SentimentFixture.windowKey("15m"), version("av-2", sample(revisionId, 3, "-40"))));
+                SentimentFixture.windowKey("15m"),
+                SentimentFixture.version("av-2", SentimentFixture.sample(revisionId, 3, "-40"))));
 
         assertThat(windowCount()).isEqualTo(2);
         assertThat(jdbc.queryForObject("""
@@ -194,12 +272,14 @@ class SentimentPersistenceIntegrationTest {
     @Test
     void windowWithNoEligibleSampleKeepsItsScoreNull() {
         String revisionId = SentimentFixture.newRevision(jdbc, revisions);
-        AggregationSample unknown = new AggregationSample(
-                revisionId, List.of(GovernanceFixture.SECURITY_A), null, null, 1,
-                Eligibility.ELIGIBLE, null, false);
+        com.aquila.sentiment.SentimentModel.AggregationSample unknown =
+                new com.aquila.sentiment.SentimentModel.AggregationSample(
+                        revisionId, List.of(GovernanceFixture.SECURITY_A), null, null, 1,
+                        Eligibility.ELIGIBLE, null, false,
+                        SentimentFixture.PUBLISHED_AT, revisionId);
 
         store.persistWindow(aggregation.rebuild(
-                SentimentFixture.windowKey("1h"), version("av-unknown", unknown)));
+                SentimentFixture.windowKey("1h"), SentimentFixture.version("av-unknown", unknown)));
 
         Map<String, Object> row = onlyWindow();
         assertThat(row.get("score")).isNull();
@@ -213,26 +293,6 @@ class SentimentPersistenceIntegrationTest {
                 SentimentFixture.input(revisionId, text, GovernanceFixture.SECURITY_A),
                 SentimentFixture.dictionary(),
                 SentimentFixture.algorithm());
-    }
-
-    private static AggregationSample sample(String revisionId, int mentions, String score) {
-        return new AggregationSample(
-                revisionId,
-                List.of(GovernanceFixture.SECURITY_A),
-                new BigDecimal(score),
-                new BigDecimal("0.8000"),
-                mentions,
-                Eligibility.ELIGIBLE,
-                null,
-                false);
-    }
-
-    private static AnalysisVersion version(String versionId, AggregationSample... samples) {
-        return new AnalysisVersion(
-                versionId,
-                SentimentFixture.POLICY_VERSION,
-                new AggregationPolicy(SentimentFixture.POLICY_VERSION, false, true),
-                List.of(samples));
     }
 
     private Map<String, Object> onlyResult() {

@@ -1360,3 +1360,75 @@ stays **OPEN**; this pass only widens what can be proven without any PO-owned va
   pass. No frontend or OpenAPI change in this pass, so those gates were not re-run.
 - Still open: the eight Step 1 PO parameters, `DictionaryView.vue` / `openapi.yaml`
   (deferred), V6 change log / publication barrier, and an independent review of this pass.
+
+## Stage C audit closure + Stage D review fix pass (2026-11-15, late)
+
+Owner instruction: "分析代码，完成之前阶段未完成的任务，未完成之前先不推进新的阶段" — fix what
+previous stages left open before advancing. Two independent audits were dispatched
+(read-only), then all codeable findings were fixed in two committed passes.
+
+### Pass 1 — Stage C leftovers (commit `5169898`)
+
+- **M-1** `recover()` diagnostic UPDATE is now fenced by `state='CLAIMED' AND fencing_token=?`
+  and its own failure is isolated per job (narrow `DataAccessException` catch, logger warning,
+  never swallows processing failures). Falsified: tautology predicate → exactly the
+  new-owner test red; dropped catch → exactly the diagnostics-down test red.
+- **M-2** refused-receive policy ITs assert every governance table stays empty
+  (normalized_doc, revision, quality, mention, marker, doc jobs).
+- **M-3** the concurrent local-order redelivery IT uses a CyclicBarrier(2) (cannot degrade
+  to sequential), asserts both callers get the same revision id and order, and covers
+  quality/mention/marker rows.
+- **Audit 4.1** the worker commit barrier re-checks the licensed-source validity window
+  inside the same `FOR UPDATE` read (plain time passage blocks a derived commit); red
+  without the check (2 race ITs, separate-connection hooks).
+- **Audit 4.2** dirty-clear and marker-consume row counts must agree in presence
+  (`(dirty>0) == (markers>0)`); a marker deleted out-of-band blocks the whole commit. Red
+  without the check.
+- `SourcePolicy` takes an injected `Clock` (shared `systemClock` bean) with a test seam;
+  validity-window semantics `[valid_from, valid_to)` locked by
+  `SourcePolicyValidityWindowIntegrationTest` (5 cases, fixed clock).
+- **Kept OPEN (owner/parameter/load dependent, per the audit):** FT-02 truly interleaved
+  receive (needs an owner decision on splitting the receive transaction), the
+  LifecycleGuard capability set (owner semantics), the dead-letter retry cap (PO parameter),
+  source-row X-lock throughput (needs load measurements). `PostsView.vue` / `openapi.yaml`
+  Files-list deviations remain owner sign-off items.
+
+### Pass 2 — Stage D review fixes (`5f1d10f..86b0638` was "Ready to merge: No")
+
+All 3 Critical / 8 Important / 3 Minor findings fixed:
+
+- **C-1** section weights, confidence interpretation, aggregation weighting and decay are
+  explicit versioned inputs (`titleWeight`/`bodyWeight`, `ConfidenceStrategy`,
+  `SampleWeighting`, `DecayPolicy`); the engine scans title and body separately.
+- **C-2** window membership `[E-duration, E)` and canonical-group dedup are enforced in
+  `AggregationService` (samples now carry `publishedAt` + `canonicalGroupId`); window ends
+  must align to the 15-minute grid.
+- **C-3** new `SentimentAnalysisService` is the only production entry point for a document
+  result: the Stage C lifecycle/content barrier and a PROCESSED-revision status gate run in
+  the same transaction; `SentimentStore.persistResult` is package-private. 8 MySQL ITs prove
+  revoke / expired-window / tampered fingerprint / SUPERSEDED / unprocessed / stale-version /
+  missing-revision all leave zero rows.
+- **I-1** CJK terms match continuous Chinese text (term-class gate + ASCII-only boundary
+  chars); ASCII terms keep word boundaries. **I-2** version-identity columns binary-collated
+  via new `V6__sentiment_identity_hardening.sql` (V5 untouched; Task 2's publication
+  migration renumbers to V7). **I-3** payloads normalised to column precision. **I-4**
+  duplicate-key readback is a current read (`FOR UPDATE`), with a two-connection
+  old-ReadView race IT. **I-5** V6 CHECK: zero-eligible windows must keep score NULL.
+  **I-6** uncalibrated policies are unconditionally EXPERIMENTAL. **I-7** analysis versions
+  cannot mix policy versions. **I-8** dictionary snapshots deeply immutable. **M-1** EXCLUDED
+  no longer miscounted as ambiguous. **M-2** duplicate security codes rejected. **M-3** row
+  alias upsert.
+- **Falsification:** 15 probe groups all red-then-restored with exact attribution (engine
+  3 red, weights red, window boundaries 2 red, canonical red, decay red, evidence-state red,
+  alignment 2 red, barrier 6 red, precision 409 red, race DuplicateKeyException red, V6
+  CHECK red, V6 collation red). V6 restored byte-identical; C1 clean+replay green.
+- **Verification:** focused sentiment suite **64/64**; full backend `-Pmysql-it` (excluding
+  the empty-schema gate `FlywayMySqlIntegrationTest`, which by design cannot pass after
+  V1–V6 are applied) **248/248**. No frontend/OpenAPI change in these two passes.
+- Stage A plan steps backfilled `[x]` on the basis of the Stage A ledger ("Task 1 complete,
+  review clean", commits `d10a72e..2a5f3c6` + review fix `e186d00`) — a documentation miss,
+  not unfinished work; the environment gates open at that time (isolated MySQL 8 schema,
+  Java 17 runtime) were closed by later stages.
+- **Still open:** Step 1 PO parameters, DictionaryView/OpenAPI (deferred), dictionary
+  snapshot publication, window evidence-state state machine (Task 2), and a fresh
+  independent review of these fix passes (`86b0638..HEAD`).

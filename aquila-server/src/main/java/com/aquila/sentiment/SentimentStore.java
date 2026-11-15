@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.sql.Timestamp;
 import java.util.List;
 import java.util.Objects;
@@ -19,7 +20,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 /**
- * Writes Stage D sentiment evidence into V5. Nothing here decides a PO-owned value: the
+ * Writes Stage D sentiment evidence into V5/V6. Nothing here decides a PO-owned value: the
  * score, confidence, unknown reason, eligibility, exclusion reason and window counters all
  * arrive already computed from explicit versioned inputs (unified plan section 9.1/9.2), so
  * this class stays parameter-free and is safe to build before Step 1 is signed.
@@ -37,6 +38,16 @@ import org.springframework.stereotype.Service;
  *       history is never spliced. Evidence-state transitions belong to the Task 2
  *       publication barrier and are only carried through here.
  * </ul>
+ *
+ * <p>Stage D review 2026-11-15: {@link #persistResult} is package-private on purpose — the
+ * only production entry point for a document result is {@link SentimentAnalysisService},
+ * which runs the Stage C lifecycle/content barrier in the same transaction (review C-3).
+ * Numeric payloads are normalised to the column precision before writing and before the
+ * replay comparison, so a caller-supplied value beyond DECIMAL(6,2)/DECIMAL(5,4) cannot
+ * make an identical replay look like a conflict (review I-3). The duplicate-key readback
+ * is a locking (current) read, so a replay inside a caller transaction whose REPEATABLE
+ * READ snapshot predates the concurrent winner still sees the committed row instead of
+ * re-throwing the duplicate (review I-4).
  */
 @Service
 @ConditionalOnProperty(name = "aquila.database.enabled", havingValue = "true")
@@ -53,10 +64,12 @@ public class SentimentStore {
     /**
      * Persists one document-level result. Returns {@code true} when the row was inserted and
      * {@code false} when the identical result was already stored (at-least-once replay).
+     * Package-private: derived results must go through the guarded
+     * {@link SentimentAnalysisService}.
      *
      * @throws ApiException conflict when the same version tuple already stores another value
      */
-    public boolean persistResult(String engineLevel, SentimentResult result) {
+    boolean persistResult(String engineLevel, SentimentResult result) {
         requireText(engineLevel, "engineLevel");
         Objects.requireNonNull(result, "result");
         requireText(result.docRevisionId(), "docRevisionId");
@@ -75,14 +88,17 @@ public class SentimentStore {
                          exclusion_reason, is_opposite_stance, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(6))
                     """, UUID.randomUUID().toString(), result.docRevisionId(), engineLevel,
-                    result.algoVersion(), result.dictVersion(), result.score(),
-                    result.confidence(), result.unknownReason(), evidence.toString(),
+                    result.algoVersion(), result.dictVersion(), normalizeScore(result.score()),
+                    normalizeConfidence(result.confidence()), result.unknownReason(),
+                    evidence.toString(),
                     result.eligibility().name(), result.exclusionReason(),
                     result.oppositeStance());
             return true;
         } catch (DuplicateKeyException duplicate) {
-            // No open transaction here: the failed INSERT was the only statement, so reading
-            // the stored row afterwards sees the committed winner (no stale ReadView).
+            // The readback below is a current read (FOR UPDATE): a caller transaction whose
+            // REPEATABLE READ snapshot predates the concurrent winner still observes the
+            // committed row, so the replay resolves to a no-op instead of re-throwing the
+            // duplicate key error.
             StoredResult stored = loadResult(engineLevel, result);
             if (stored == null) {
                 throw duplicate;
@@ -117,13 +133,13 @@ public class SentimentStore {
                     (window_id, security_code, window_type, window_end, analysis_version,
                      aggregation_policy_version, score, eligible_sample_count, mention_count,
                      excluded_ambiguous_count, evidence_state, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(6))
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(6)) AS incoming
                 ON DUPLICATE KEY UPDATE
-                    score = VALUES(score),
-                    eligible_sample_count = VALUES(eligible_sample_count),
-                    mention_count = VALUES(mention_count),
-                    excluded_ambiguous_count = VALUES(excluded_ambiguous_count),
-                    evidence_state = VALUES(evidence_state)
+                    score = incoming.score,
+                    eligible_sample_count = incoming.eligible_sample_count,
+                    mention_count = incoming.mention_count,
+                    excluded_ambiguous_count = incoming.excluded_ambiguous_count,
+                    evidence_state = incoming.evidence_state
                 """, UUID.randomUUID().toString(), window.securityCode(), window.windowType(),
                 Timestamp.from(window.windowEnd()), window.analysisVersion(),
                 window.aggregationPolicyVersion(), window.score(), window.eligibleSampleCount(),
@@ -137,6 +153,7 @@ public class SentimentStore {
                 FROM m5_sentiment_result
                 WHERE doc_revision_id = ? AND engine_level = ?
                   AND algo_version = ? AND dict_version = ?
+                FOR UPDATE
                 """, (resultSet, rowNumber) -> new StoredResult(
                         resultSet.getBigDecimal(1),
                         resultSet.getBigDecimal(2),
@@ -157,6 +174,16 @@ public class SentimentStore {
         return node;
     }
 
+    /** Normalised to the DECIMAL(6,2) column precision so a replay compares like with like. */
+    private static BigDecimal normalizeScore(BigDecimal value) {
+        return value == null ? null : value.setScale(2, RoundingMode.HALF_UP);
+    }
+
+    /** Normalised to the DECIMAL(5,4) column precision so a replay compares like with like. */
+    private static BigDecimal normalizeConfidence(BigDecimal value) {
+        return value == null ? null : value.setScale(4, RoundingMode.HALF_UP);
+    }
+
     private static void requireText(String value, String name) {
         if (value == null || value.isBlank()) {
             throw new IllegalArgumentException(name + " is required");
@@ -174,8 +201,8 @@ public class SentimentStore {
             String hitEvidence) {
 
         private boolean matches(ObjectMapper json, SentimentResult result, JsonNode expectedEvidence) {
-            return sameNumber(score, result.score())
-                    && sameNumber(confidence, result.confidence())
+            return sameNumber(score, normalizeScore(result.score()))
+                    && sameNumber(confidence, normalizeConfidence(result.confidence()))
                     && Objects.equals(unknownReason, result.unknownReason())
                     && Objects.equals(eligibility, result.eligibility().name())
                     && Objects.equals(exclusionReason, result.exclusionReason())

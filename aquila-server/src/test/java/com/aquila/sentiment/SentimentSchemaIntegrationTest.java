@@ -220,6 +220,52 @@ class SentimentSchemaIntegrationTest {
                 .isEqualTo(8L);
     }
 
+    /**
+     * Review I-2 (V6): the version-identity columns are binary-collated, so version ids
+     * differing only by case are distinct database identities. On the default
+     * utf8mb4_0900_ai_ci collation the second dict row and the second window row are
+     * swallowed by one unique key, which is exactly the red state.
+     */
+    @Test
+    void versionIdsDifferingOnlyByCaseAreDistinctIdentities() {
+        SentimentFixture.insertDictVersion(jdbc, "dict-case", "hash-case-lower");
+        SentimentFixture.insertDictVersion(jdbc, "DICT-CASE", "hash-case-upper");
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM m5_dict_version
+                WHERE dict_version IN ('dict-case', 'DICT-CASE')
+                """, Integer.class))
+                .isEqualTo(2);
+
+        insertWindow("av-Case", SentimentFixture.POLICY_VERSION,
+                GovernanceFixture.SECURITY_A, new BigDecimal("10.00"), 1, 1, 0);
+        insertWindow("AV-CASE", SentimentFixture.POLICY_VERSION,
+                GovernanceFixture.SECURITY_A, new BigDecimal("20.00"), 1, 1, 0);
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM m5_sentiment_window
+                WHERE analysis_version IN ('av-Case', 'AV-CASE')
+                """, Integer.class))
+                .isEqualTo(2);
+    }
+
+    /**
+     * Review I-5 (V6): a window with zero eligible samples must not carry any score —
+     * not even a "neutral" zero. On V5 this insert succeeded, which is exactly the red
+     * state; a genuine neutral zero with at least one eligible sample stays valid.
+     */
+    @Test
+    void aWindowWithoutEligibleSamplesCannotCarryAnyScore() {
+        assertThatThrownBy(() -> insertWindow(BigDecimal.ZERO, 0, 3, 1))
+                .isInstanceOf(DataAccessException.class);
+        assertThatThrownBy(() -> insertWindow(new BigDecimal("20.00"), 0, 0, 0))
+                .isInstanceOf(DataAccessException.class);
+
+        insertWindow(BigDecimal.ZERO, 1, 1, 0);
+        assertThat(jdbc.queryForObject("""
+                SELECT score FROM m5_sentiment_window WHERE eligible_sample_count = 1
+                """, BigDecimal.class))
+                .isEqualByComparingTo("0.00");
+    }
+
     private void insertResult(
             BigDecimal score, BigDecimal confidence, String unknownReason,
             String eligibility, String exclusionReason) {

@@ -14,6 +14,11 @@ import org.junit.jupiter.api.Test;
  * Falsifying tests for the Stage D Task 1 engine. Every numeric parameter is supplied by an
  * explicit versioned snapshot; no business dictionary or threshold is embedded in the tests
  * as a production default (unified plan section 9.1 freezes those through the PO).
+ *
+ * <p>Stage D review 2026-11-15 (C-1/I-1): the title/body weights are explicit inputs, so
+ * different weights must produce different scores; CJK terms must match continuous Chinese
+ * text (the old ASCII word boundary made "利好" inside "公司利好公告" unreachable), while
+ * pure ASCII terms must still respect word boundaries.
  */
 class SentimentEngineTest {
 
@@ -30,8 +35,27 @@ class SentimentEngineTest {
                 version, scores, Set.of("not"), Map.of("sharply", new BigDecimal("1.5")), false);
     }
 
+    private static DictionarySnapshot chineseDictionary() {
+        Map<String, BigDecimal> scores = new LinkedHashMap<>();
+        scores.put("利好", new BigDecimal("40"));
+        scores.put("重大利好", new BigDecimal("60"));
+        scores.put("decline", new BigDecimal("-40"));
+        return new DictionarySnapshot(
+                "dict-zh", scores, Set.of(), Map.of(), false);
+    }
+
     private static AlgorithmSnapshot algorithm() {
-        return new AlgorithmSnapshot("algo-1", MIN_CONFIDENCE, 2, 20, true);
+        return new AlgorithmSnapshot(
+                "algo-1", MIN_CONFIDENCE, 2, 20, true,
+                BigDecimal.ONE, BigDecimal.ONE, ConfidenceStrategy.HITS_OVER_FULL_HITS);
+    }
+
+    private static AlgorithmSnapshot weightedAlgorithm(
+            String titleWeight, String bodyWeight) {
+        return new AlgorithmSnapshot(
+                "algo-weighted", MIN_CONFIDENCE, 2, 20, true,
+                new BigDecimal(titleWeight), new BigDecimal(bodyWeight),
+                ConfidenceStrategy.HITS_OVER_FULL_HITS);
     }
 
     private static SentimentInput input(String text, String... securities) {
@@ -93,7 +117,8 @@ class SentimentEngineTest {
     @Test
     void lowConfidenceBelowExplicitThresholdRemainsUnknown() {
         AlgorithmSnapshot strict = new AlgorithmSnapshot(
-                "algo-strict", new BigDecimal("0.90"), 100, 20, true);
+                "algo-strict", new BigDecimal("0.90"), 100, 20, true,
+                BigDecimal.ONE, BigDecimal.ONE, ConfidenceStrategy.HITS_OVER_FULL_HITS);
 
         SentimentResult result = engine.evaluate(
                 input("gain", "SH600000"), dictionary("dict-1", "40", "-40"), strict);
@@ -134,5 +159,75 @@ class SentimentEngineTest {
 
         assertThat(result.oppositeStance()).isTrue();
         assertThat(result.eligibility()).isEqualTo(Eligibility.ELIGIBLE);
+    }
+
+    /**
+     * Review I-1: the old {@code Character.isLetterOrDigit} boundary treats every Chinese
+     * character as a letter, so a CJK term could never match inside continuous Chinese
+     * text — the realistic input shape for this platform. This is red against the old code.
+     */
+    @Test
+    void continuousChineseTextMatchesWithoutSpaces() {
+        SentimentResult result = engine.evaluate(
+                input("公司利好公告", "SH600000"), chineseDictionary(), algorithm());
+
+        assertThat(result.score()).isNotNull();
+        assertThat(result.score()).isEqualByComparingTo("40.00");
+        assertThat(result.hitWords()).containsExactly("利好");
+    }
+
+    /** Review I-1: pure ASCII terms must still not match inside a longer ASCII word. */
+    @Test
+    void asciiTermsStillRespectWordBoundaries() {
+        SentimentResult substring = engine.evaluate(
+                input("regainer", "SH600000"), dictionary("dict-1", "40", "-40"), algorithm());
+        SentimentResult plural = engine.evaluate(
+                input("gains", "SH600000"), dictionary("dict-1", "40", "-40"), algorithm());
+
+        assertThat(substring.unknownReason()).isEqualTo("NO_HIT");
+        assertThat(substring.score()).isNull();
+        assertThat(plural.unknownReason()).isEqualTo("NO_HIT");
+        assertThat(plural.score()).isNull();
+    }
+
+    /** CJK and ASCII mix both ways: a CJK term matches next to ASCII, and vice versa. */
+    @Test
+    void cjkAndAsciiTermsMatchAcrossScriptBoundaries() {
+        SentimentResult cjkNextToAscii = engine.evaluate(
+                input("bullish利好", "SH600000"), chineseDictionary(), algorithm());
+        SentimentResult asciiNextToCjk = engine.evaluate(
+                input("decline公司", "SH600000"), chineseDictionary(), algorithm());
+
+        assertThat(cjkNextToAscii.score()).isEqualByComparingTo("40.00");
+        assertThat(asciiNextToCjk.score()).isEqualByComparingTo("-40.00");
+    }
+
+    /** Longest-match-first must keep winning now that CJK terms are reachable at all. */
+    @Test
+    void longestChineseTermWinsOverItsSubterms() {
+        SentimentResult result = engine.evaluate(
+                input("重大利好", "SH600000"), chineseDictionary(), algorithm());
+
+        assertThat(result.hitWords()).containsExactly("重大利好");
+        assertThat(result.score()).isEqualByComparingTo("60.00");
+    }
+
+    /**
+     * Review C-1: the title/body weighting is an explicit versioned input. With the old
+     * hardcoded 1:1 concatenation both scores below are equal, so this is red there.
+     */
+    @Test
+    void explicitSectionWeightsChangeTheScore() {
+        AlgorithmSnapshot titleHeavy = weightedAlgorithm("2", "1");
+
+        SentimentResult inTitle = engine.evaluate(
+                new SentimentInput("rev-1", "gain", "", List.of("SH600000")),
+                dictionary("dict-1", "40", "-40"), titleHeavy);
+        SentimentResult inBody = engine.evaluate(
+                new SentimentInput("rev-1", "", "gain", List.of("SH600000")),
+                dictionary("dict-1", "40", "-40"), titleHeavy);
+
+        assertThat(inTitle.score()).isEqualByComparingTo("80.00");
+        assertThat(inBody.score()).isEqualByComparingTo("40.00");
     }
 }

@@ -67,6 +67,28 @@ closed) plus `SentimentPersistenceIntegrationTest`, and widened
 `SentimentSchemaIntegrationTest` from 6 to 12 cases. No PO value, table or migration changed;
 Step 1 is still unsigned and Steps 1–5 stay `[ ]`. Details: brief §6.
 
+**Scope note addendum 2 (2026-11-15, review-fix pass):** the independent review of
+`5f1d10f..86b0638` returned "Ready to merge: No" with 3 Critical / 8 Important / 3 Minor.
+All codeable findings were fixed in one pass (commits listed in the evidence register):
+title/body weights, the confidence interpretation and aggregation weighting/decay became
+explicit versioned inputs (`AlgorithmSnapshot` + `ConfidenceStrategy` + `SampleWeighting` +
+`DecayPolicy`) instead of hidden 1:1/linear/arithmetic choices (C-1); window membership
+[E-duration, E) and canonical-group dedup are enforced by `AggregationService` and window
+ends must align to the 15-minute grid (C-2); the only production entry point for a document
+result is now `SentimentAnalysisService`, which runs the full Stage C lifecycle/content/
+revision-status barrier in the same transaction, and the store's `persistResult` is
+package-private (C-3); CJK terms match continuous Chinese text while ASCII terms keep word
+boundaries (I-1); version-identity columns are binary-collated via
+`V6__sentiment_identity_hardening.sql` (I-2, V5 stays untouched); numeric payloads are
+normalised to column precision (I-3); the duplicate-key readback is a current read (I-4);
+a zero-eligible window cannot carry any score (I-5, V6 CHECK); uncalibrated policies are
+unconditionally EXPERIMENTAL (I-6); analysis versions cannot mix policy versions (I-7);
+dictionary snapshots are deeply immutable (I-8); EXCLUDED is no longer miscounted as
+ambiguous (M-1); duplicate security codes are rejected (M-2); the upsert uses row aliases
+(M-3). Step 1 is still unsigned and Steps 1–5 stay `[ ]`; `DictionaryView.vue` /
+`openapi.yaml` remain deferred; the as-built contract (results require PROCESSED revisions)
+and falsification evidence: brief §7.
+
 - [ ] **Step 1: Freeze analysis and aggregation parameters**
 
 PO approves label/score mapping, confidence interpretation, multi-security eligibility rules and aggregation policy version; record a fixed labeled evaluation set.
@@ -96,7 +118,7 @@ Expected: PASS on MySQL 8. Run full backend tests, frontend tests/build, and Ope
 - Create: `aquila-server/src/main/java/com/aquila/sentiment/BackfillWorker.java`
 - Create: `aquila-server/src/main/java/com/aquila/workbench/WorkbenchController.java`
 - Create: `aquila-server/src/main/java/com/aquila/workbench/WorkbenchService.java`
-- Create: `aquila-server/src/main/resources/db/migration/V6__analysis_publication.sql`
+- Create: `aquila-server/src/main/resources/db/migration/V7__analysis_publication.sql` (renumbered 2026-11-15: the applied sequence advanced to V6 with `V6__sentiment_identity_hardening.sql`, the Stage D review fix migration; physical numbering follows the applied sequence, decision D3 pattern)
 - Create: `aquila-server/src/test/java/com/aquila/sentiment/AnalysisPublicationIntegrationTest.java`
 - Create: `aquila-web/src/views/WorkbenchView.vue`
 - Create: `aquila-web/src/views/SecurityDetailView.vue`
@@ -115,7 +137,7 @@ Continuously insert/revise/delete input while candidate backfill runs; simulate 
 
 Record VER-01 maximum duration, queue limit, backpressure, and evidence thresholds from MySQL 8 pressure runs before enabling publication.
 
-- [ ] **Step 3: Add V6 change-log and publication schema**
+- [ ] **Step 3: Add V7 change-log and publication schema**
 
 Add commit-ordered change-log head, version lifecycle/checkpoints, backfill/catch-up watermarks, validation results, active pointer, bounded barrier, and publication audit.
 

@@ -69,19 +69,19 @@
 **Interfaces:**
 - Produces: `Result<T>(int code, String message, T data, String traceId)`; `GET /api/health`; frontend `request<T>(path: string, init?: RequestInit): Promise<Result<T>>`; `DatabaseTargetPolicy.permits(String schemaName): boolean`.
 
-- [ ] **Step 1: Record greenfield decision and update canonical baseline**
+- [x] **Step 1: Record greenfield decision and update canonical baseline**
 
 Update unified plan to v1.4: G01 is `N/A` only because the owner chose a new project and isolated DB; prohibit old database access; keep G02–G05 unchanged. Record approver/date/source and rationale; mark A-DR-01 `N/A` without claiming inventory or a completed G01 exercise; sync README to v1.4.
 
-- [ ] **Step 2: Map all domain tables before DDL**
+- [x] **Step 2: Map all domain tables before DDL**
 
 Create `docs/database/schema-v1.md` from unified §7.1. For each table document ownership, key constraints, references, retention class, and owning migration V1–V8. Do not copy historical DDL or add placeholder tables.
 
-- [ ] **Step 3: Write failing contract tests and build manifests**
+- [x] **Step 3: Write failing contract tests and build manifests**
 
 Create minimal Maven/npm test harnesses. Test success/error envelopes, server-generated `X-Trace-Id`, `GET /api/health`, rejection of non-greenfield schema names, same-origin API behavior, malformed response rejection, and packaged frontend availability.
 
-- [ ] **Step 4: Run tests red**
+- [x] **Step 4: Run tests red**
 
 Run: `mvn -f aquila-server/pom.xml -Dtest=ResultTest,HealthControllerTest,GlobalExceptionHandlerTest,DatabaseTargetPolicyTest test`
 
@@ -91,11 +91,11 @@ Run: `npm --prefix aquila-web test -- --run src/api/http.test.ts`
 
 Expected: FAIL because the API client is not implemented.
 
-- [ ] **Step 5: Implement minimal app, target guard, and build integration**
+- [x] **Step 5: Implement minimal app, target guard, and build integration**
 
 Pin compatible Spring Boot 3.x and frontend dependencies. Configure the Vite `/api` proxy and a PowerShell build that packages generated frontend assets into the jar without committing generated files. Require the exact new schema name and scoped DB credentials; do not embed credentials or fall back to H2.
 
-- [ ] **Step 6: Verify the new database and full baseline**
+- [x] **Step 6: Verify the new database and full baseline**
 
 Run `mvn -f aquila-server/pom.xml -Pmysql-it -Dtest=FlywayMySqlIntegrationTest test` against only the manually provisioned `stock_greenfield_20261109` schema. Assert server is MySQL 8, schema has no tables/history, and test performs no migration.
 
@@ -107,6 +107,13 @@ Run: `mvn -f aquila-server/pom.xml test`, `npm --prefix aquila-web test -- --run
 
 Expected: all PASS.
 
-- [ ] **Step 7: Save evidence and commit**
+- [x] **Step 7: Save evidence and commit**
+
+> Backfill (2026-11-15): these steps were left unchecked by an earlier documentation miss,
+> not by unfinished work. The Stage A ledger records Task 1 complete (commits
+> `d10a72e..2a5f3c6`, review clean, one review fix `e186d00`); the environment gates that
+> were OPEN at the time (isolated MySQL 8 schema, Java 17 runtime) were closed by later
+> stages — every stage since Stage B runs the full `-Pmysql-it` suite on the provisioned
+> `stock_greenfield_20261109` schema under JDK 17.
 
 Record versions, commands/results, schema identity, G01 rationale, and known external gates. Review status to ensure no historical files were restored. Commit only stage A files as `feat: establish greenfield baseline` with the required trailer.
