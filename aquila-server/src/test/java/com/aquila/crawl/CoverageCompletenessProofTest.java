@@ -20,7 +20,9 @@ import org.springframework.test.context.DynamicPropertySource;
  * Falsifying tests for finding I1: an overall COMPLETE verdict must be proved, not merely
  * the absence of a worse status. A run is COMPLETE only when every page succeeded, the run
  * reached a terminal page carrying non-null terminal evidence, and the page cursors form an
- * unbroken chain.
+ * unbroken chain. Third-round finding G-1 adds that the terminal page is identified by the
+ * persisted {@code page_terminal} flag, never inferred from an empty cursor, because a
+ * successful non-terminal page also carries the COMPLETE page status.
  */
 @ExtendWith(AuthMySqlCondition.class)
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
@@ -53,6 +55,20 @@ class CoverageCompletenessProofTest {
     void successfulPagesWithoutATerminalPageAreNotComplete() {
         String runId = newRun();
         coverage.commitPage(page(runId, 0, null, "cursor-1", false, true, "adapter-1.0"));
+
+        assertThat(coverage.computeOverall(runId).overallStatus()).isNotEqualTo("COMPLETE");
+    }
+
+    /**
+     * Round-1 falsifying case 3, which the first two rounds never actually wrote: a page the
+     * adapter reported as non-terminal but that carries no next cursor and does carry evidence.
+     * That is the exact shape the pre-G-1 proof mistook for a terminal page and wrongly
+     * declared COMPLETE. The persisted {@code page_terminal} flag is what rules it out.
+     */
+    @Test
+    void nonTerminalPageWithEmptyCursorButEvidenceIsNotComplete() {
+        String runId = newRun();
+        coverage.commitPage(page(runId, 0, null, null, false, true, "terminal-1"));
 
         assertThat(coverage.computeOverall(runId).overallStatus()).isNotEqualTo("COMPLETE");
     }

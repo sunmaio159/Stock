@@ -11,7 +11,7 @@ import org.springframework.stereotype.Service;
 /**
  * Single point that validates licensed-source permissions and their validity window
  * before any source-aware operation. Each of the six capabilities is granted and checked
- * separately (统一方案 §8.1). All checks fail closed: an unconfigured, revoked, expired,
+ * separately (the unified design §8.1). All checks fail closed: an unconfigured, revoked, expired,
  * out-of-window source, or one that does not carry the requested grant, is rejected rather
  * than silently allowed.
  */
@@ -66,7 +66,7 @@ public class SourcePolicy {
                 || (row.validTo() != null && !now.isBefore(row.validTo()))) {
             throw new ApiException(HttpStatus.FORBIDDEN, "Source permission is outside its validity window");
         }
-        // 统一方案 §8.1: each capability is granted separately, so an ACTIVE source that
+        // The unified design §8.1: each capability is granted separately, so an ACTIVE source that
         // lacks this specific grant must still be refused for this operation.
         if (!row.grants(permission)) {
             throw new ApiException(HttpStatus.FORBIDDEN,

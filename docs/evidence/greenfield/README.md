@@ -795,6 +795,51 @@ Full findings with my verification of each:
 `.superpowers/sdd/2026-11-09-zero-based-stage-c/task-1-review-report-round3.md`; review
 package `review-0513bab..03edf36.diff`.
 
+### Round 4 — G-1 terminal-flag persistence (2026-11-15)
+
+Per the owner-issued migration decision (edit `V3` in place), this round implements G-1 and
+the round-3 minors. None of it is closed until a fourth independent review confirms it.
+
+- **G-1** — `m3_coverage_fact` gains a `page_terminal BOOLEAN NOT NULL DEFAULT FALSE` column
+  (V3 rewritten in place; checksum change → a fresh empty schema is mandatory). The adapter-
+  reported terminal signal is persisted in `CoverageService.commitPage` and read back in
+  `computeOverall`; `PageVerdict` carries it; `terminalPageProved` now consults
+  `last.pageTerminal()` instead of inferring termination from a null cursor. Round-1
+  falsifying case 3 is now written twice: as a pure classification case in
+  `CoverageVerdictClassificationTest` (watched red, then green — 4/4) and as the persistence
+  case `CoverageCompletenessProofTest.nonTerminalPageWithEmptyCursorButEvidenceIsNotComplete`.
+- **G-3** — the failed-page branch of `CrawlApplicationService` carries an explicit comment
+  that it writes only a `PARTIAL` audit fact, so the content write-point re-checks are
+  intentionally out of scope there.
+- **G-5** — `computeOverall` computes the tally once (a private `resolveOverall(Tally, pages)`
+  overload) instead of twice; the Chinese document-title references in `SourcePolicy` (two
+  comments) and `V3` (one) are replaced with "the unified design".
+- **G-4** — `CrawlStaleLeaseIntegrationTest.simultaneousClaimsProduceExactlyOneLeaseOwner`
+  replaces the sequential-only guard: four worker services contend for the same source lease
+  behind a start latch, and the invariant asserted is that exactly one succeeds and three
+  conflict, with a single distinct fencing token and one run's pages surviving — the real
+  `FOR UPDATE` + `WHERE fencing_token = issuedToken - 1` CAS race of round-1 C1 root cause (b).
+
+Reset route (recorded for owner confirmation): the fresh empty schema was produced with the
+`aquila_migrate` account via Flyway `clean` — DDL on that sanctioned isolated schema's own
+objects, which is within its granted role — then re-migrated to the new V3 on first IT boot. No
+administrative credential was used, and the helper refused any schema other than
+`stock_greenfield_20261109`. This is a less-privileged alternative to the round-2 admin
+drop/recreate route; it is flagged here rather than assumed.
+
+Verification, all executed:
+- empty-schema gate `FlywayMySqlIntegrationTest` → **1 / 0 / 0 / 0** while the schema was empty;
+- full `-Pmysql-it` backend suite (excluding that gate) → **148 / 0 / 0 / 0**, with
+  `Successfully applied 3 migrations ... now at version v3` proving the rewritten V3 on MySQL 8.4;
+  `CoverageCompletenessProofTest` 6/6 (incl. the new persistence case),
+  `CoverageVerdictClassificationTest` 4/4, `CrawlStaleLeaseIntegrationTest` 3/3;
+- frontend four gates → typecheck clean, vitest 5/5, `vite build` succeeded, `redocly` valid;
+- clean-jar gate → `mvn clean package` BUILD SUCCESS, jar `BOOT-INF/classes/static/` embeds
+  `index--bfHftHD.js` and `index-DZaAL6_G.css`, matching `aquila-web/dist` byte-for-byte.
+
+`C-T1-01` still stays `CHANGES_REQUIRED`: the code is committed but not closed until the fourth
+independent review confirms it.
+
 ### Status
 
 **Round 1, review of `ceae6fb`: `CHANGES_REQUIRED`.** An independent two-phase

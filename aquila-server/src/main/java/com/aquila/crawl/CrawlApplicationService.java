@@ -93,6 +93,9 @@ public class CrawlApplicationService {
                         sourceCode, subscriptionScope, intervalStart, intervalEnd,
                         cursor, pageIndex, pageSize));
             } catch (SourceFetchException exception) {
+                // A failed page writes only a coverage-fact audit row (status PARTIAL); it stores
+                // no licensed raw/normalized content and runs no analysis, so the write-point
+                // licence rechecks that guard content storage in commitPage do not apply here.
                 lastState = coverage.commitPage(failedPage(
                         runId, sourceCode, subscriptionScope, subscriptionVersion,
                         intervalStart, intervalEnd, cursor, pageIndex,

@@ -1,12 +1,14 @@
 -- Stage C Task 1: source policy, coverage, raw, and durable jobs.
 -- Owning migration for m3_* objects per docs/database/schema-v1.md.
+-- V3 has been rewritten in place twice (round-2 permission columns, round-4 page_terminal),
+-- so its checksum changes each time: every replay must run against a fresh empty schema.
 
 CREATE TABLE m3_source_config (
     source_code               VARCHAR(32)  NOT NULL,
     source_name               VARCHAR(128) NOT NULL,
     permission_version        INT          NOT NULL DEFAULT 1,
     permission_status         VARCHAR(16)  NOT NULL,
-    -- Per-capability grants (统一方案 §8.1): each of the six permissions is checked
+    -- Per-capability grants (the unified design §8.1): each of the six permissions is checked
     -- individually at its point of use; permission_status only gates the whole source.
     perm_access               BOOLEAN      NOT NULL DEFAULT FALSE,
     perm_store_raw            BOOLEAN      NOT NULL DEFAULT FALSE,
@@ -69,6 +71,7 @@ CREATE TABLE m3_coverage_fact (
     evidence_reference       VARCHAR(256) NULL,
     observed_at              DATETIME(6)  NOT NULL,
     page_index               INT          NOT NULL DEFAULT 0,
+    page_terminal            BOOLEAN      NOT NULL DEFAULT FALSE,
     created_at               DATETIME(6)  NOT NULL,
     PRIMARY KEY (coverage_id),
     UNIQUE KEY uk_m3_coverage_run_page (run_id, page_index),

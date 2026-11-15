@@ -32,8 +32,8 @@ public class CoverageService {
                     (coverage_id, source_code, run_id, subscription_scope, subscription_version,
                      business_interval_start, business_interval_end, cursor_before, cursor_after,
                      coverage_status, reason, adapter_contract_version, evidence_reference,
-                     observed_at, page_index, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(6))
+                     observed_at, page_index, page_terminal, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(6))
                 """,
                 UUID.randomUUID().toString(),
                 commit.sourceCode(),
@@ -49,22 +49,25 @@ public class CoverageService {
                 commit.adapterContractVersion(),
                 commit.evidenceReference(),
                 Instant.now(),
-                commit.pageIndex());
+                commit.pageIndex(),
+                commit.terminal());
         return computeOverall(commit.runId());
     }
 
     public CoverageState computeOverall(String runId) {
         List<PageVerdict> pages = jdbc.query("""
-                SELECT coverage_status, cursor_before, cursor_after, evidence_reference
+                SELECT coverage_status, cursor_before, cursor_after, evidence_reference,
+                       page_terminal
                 FROM m3_coverage_fact WHERE run_id = ? ORDER BY page_index
                 """, (resultSet, rowNumber) -> new PageVerdict(
                         resultSet.getString("coverage_status"),
                         resultSet.getString("cursor_before"),
                         resultSet.getString("cursor_after"),
-                        resultSet.getString("evidence_reference")), runId);
+                        resultSet.getString("evidence_reference"),
+                        resultSet.getBoolean("page_terminal")), runId);
         Tally tally = tally(pages);
         return new CoverageState(
-                runId, resolveOverall(pages), tally.total(), tally.complete(), tally.partial(),
+                runId, resolveOverall(tally, pages), tally.total(), tally.complete(), tally.partial(),
                 tally.unknown(), tally.unrecoverable(), Instant.now());
     }
 
@@ -75,7 +78,10 @@ public class CoverageService {
      * on the storage CHECK constraint to make it unreachable.
      */
     static String resolveOverall(List<PageVerdict> pages) {
-        Tally tally = tally(pages);
+        return resolveOverall(tally(pages), pages);
+    }
+
+    private static String resolveOverall(Tally tally, List<PageVerdict> pages) {
         if (tally.total() == 0 || tally.unclassified() > 0) {
             return "UNKNOWN";
         }
@@ -118,14 +124,17 @@ public class CoverageService {
     }
 
     /**
-     * A terminal page proves completeness only if it is the page the run actually stopped
-     * on. An earlier page that merely looked terminal — because a contract version emitted a
-     * null cursor without ending, or a row was written out of order — proves nothing about
-     * the rest of the interval, so only the last page in index order is consulted.
+     * Completeness is proven only by the page the run actually terminated on, identified by
+     * the persisted {@code page_terminal} flag rather than inferred from an empty cursor —
+     * third-round finding G-1 was precisely that a successful non-terminal page also carries
+     * the COMPLETE page status, so a null cursor could not tell the two apart. Only the last
+     * page in index order is consulted, and it must carry the flag, the evidence reference,
+     * and no next cursor.
      */
     private static boolean terminalPageProved(List<PageVerdict> pages) {
         PageVerdict last = pages.get(pages.size() - 1);
         return "COMPLETE".equals(last.status())
+                && last.pageTerminal()
                 && last.cursorAfter() == null
                 && last.evidenceReference() != null;
     }
@@ -179,7 +188,8 @@ public class CoverageService {
 
     /** One page's persisted verdict, the input to the run-level completeness proof. */
     record PageVerdict(
-            String status, String cursorBefore, String cursorAfter, String evidenceReference) {}
+            String status, String cursorBefore, String cursorAfter, String evidenceReference,
+            boolean pageTerminal) {}
 
     /** Page counts by status; {@code unclassified} is the outside-the-vocabulary count. */
     private record Tally(

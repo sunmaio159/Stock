@@ -9,7 +9,14 @@ import com.aquila.masterdata.MasterDataFixture;
 import com.aquila.sourcepolicy.SourcePolicy;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -111,6 +118,69 @@ class CrawlStaleLeaseIntegrationTest {
 
         assertThat(count("SELECT COUNT(*) FROM m3_coverage_fact")).isEqualTo(1);
         assertThat(count("SELECT DISTINCT fencing_token FROM m3_task_instance")).isEqualTo(1);
+    }
+
+    /**
+     * Round-3 finding G-4: the two tests above are sequential, so they guard the live-lease
+     * refusal but never exercise the actual simultaneous race that round-1 C1 root cause (b)
+     * described — several workers reading the lease without a lock and issuing the same next
+     * fencing token. Here multiple workers hit the claim at once against the same source.
+     * The {@code FOR UPDATE} lock plus the {@code WHERE fencing_token = issuedToken - 1} CAS
+     * must let exactly one worker take the lease and force every other concurrent claim into a
+     * conflict, so a single fencing token and a single run's pages are all that survive.
+     */
+    @Test
+    void simultaneousClaimsProduceExactlyOneLeaseOwner() throws Exception {
+        fixtureAdapter.registerPlan(CrawlFixture.SOURCE_CODE,
+                FixtureSourcePlan.traceable(1, 1, CrawlFixture.ADAPTER_CONTRACT));
+
+        int workers = 4;
+        CrawlApplicationService[] services = new CrawlApplicationService[workers];
+        for (int index = 0; index < workers; index++) {
+            // Each service instance is a distinct worker: leaseOwner is per instance.
+            services[index] = new CrawlApplicationService(
+                    jdbc, transactions, policy, fixtureAdapter, coverage, worker);
+        }
+
+        CountDownLatch startGate = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(workers);
+        try {
+            List<Future<Optional<HttpStatus>>> attempts = new ArrayList<>();
+            for (int index = 0; index < workers; index++) {
+                final CrawlApplicationService service = services[index];
+                // A distinct interval end gives a distinct run key, so no worker is short-
+                //circuited by idempotency and all four contend for the lease itself.
+                final Instant intervalEnd = END.plus(Duration.ofHours(6L * (index + 1)));
+                attempts.add(pool.submit(() -> {
+                    startGate.await();
+                    try {
+                        service.runCollection(CrawlFixture.SOURCE_CODE, "DEFAULT", START, intervalEnd);
+                        return Optional.of(HttpStatus.OK);
+                    } catch (ApiException exception) {
+                        return Optional.of(exception.status());
+                    }
+                }));
+            }
+            startGate.countDown();
+
+            int succeeded = 0;
+            int conflicted = 0;
+            for (Future<Optional<HttpStatus>> attempt : attempts) {
+                HttpStatus status = attempt.get(30, TimeUnit.SECONDS).orElse(null);
+                if (status == HttpStatus.OK) {
+                    succeeded++;
+                } else if (status == HttpStatus.CONFLICT) {
+                    conflicted++;
+                }
+            }
+
+            assertThat(succeeded).isEqualTo(1);
+            assertThat(conflicted).isEqualTo(workers - 1);
+            assertThat(count("SELECT COUNT(DISTINCT fencing_token) FROM m3_task_instance")).isEqualTo(1);
+            assertThat(count("SELECT COUNT(*) FROM m3_coverage_fact")).isEqualTo(1);
+        } finally {
+            pool.shutdownNow();
+        }
     }
 
     private long cursorVersion() {
