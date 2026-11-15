@@ -1321,3 +1321,42 @@ Owner instruction "继续推进阶段任务" after the Chinese login-page locali
 - G02 / COV-01 / G05 remain `OPEN`; LIFE-01 unchanged. This record closes no stage gate
   and is not an owner decision.
 
+
+## Stage D Task 1 — parameter-independent persistence expansion (2026-11-15, later pass)
+
+Owner instruction: "先扩不依赖参数的持久化/约束 IT，把参数决策留到最后". Step 1 therefore
+stays **OPEN**; this pass only widens what can be proven without any PO-owned value.
+
+- **Delivered (new production code):** `com.aquila.sentiment.SentimentStore` persists one
+  document result per `(doc_revision_id, engine_level, algo_version, dict_version)` and
+  version-keyed window rows. It embeds no threshold, weight or eligibility decision — the
+  score, confidence, unknown reason and counters arrive already computed from explicit
+  versioned snapshots, so it is safe to build before Step 1 is signed. An identical replay
+  is a no-op (`false`); a different payload under the same tuple raises 409 because
+  deterministic versioned inputs cannot produce two answers; rebuilding a window replaces
+  its own analysis version's counters in place, while another analysis version keeps its own
+  row (no splicing). `hit_evidence` is stored as JSON and compared as parsed JSON, because
+  MySQL normalises JSON text and byte comparison would raise false conflicts.
+- **Coverage added:** `SentimentPersistenceIntegrationTest` (8 cases, MySQL 8.4) plus
+  `SentimentSchemaIntegrationTest` extended 6 → 12: dictionary-entry score bound and
+  snapshot FK/uniqueness, one result per (revision, engine level, algorithm, dictionary),
+  result → revision FK, exhaustive unknown shapes (score without confidence, score with an
+  unknown reason), eligible-with-exclusion-reason rejection, out-of-range `-101`/`-0.0001`,
+  window key scoped by analysis version, window → security/policy FKs, and a later
+  dirty-window generation. Shared setup moved to `SentimentFixture`; the constraint IT now
+  creates its revision through `RevisionService` rather than duplicating fixture SQL.
+- **Falsification:** a stub store that claims success and writes nothing gave **8/8 red**.
+  Java probes (bypass the conflict check; drop `ON DUPLICATE KEY UPDATE`) gave exactly 2 red
+  at the two intended tests. DDL probes on the isolated schema gave exact attribution:
+  `chk_m5_result_unknown` as a tautology → exactly 2 red
+  (`halfZeroUnknownResultIsRejected`, `unknownShapeCannotCarryAHalfKnownOrReasonedScore`);
+  `uq_m5_result_revision_versions` demoted to a plain key → exactly 3 red (2 store,
+  1 schema). V5 was then restored byte-for-byte (empty `git diff`), and the C1
+  `flyway:clean` + V1–V5 replay produced green with no probe leftovers.
+- **Verification:** focused sentiment suite **34/34** (8 engine + 6 aggregation + 12 schema
+  IT + 8 persistence IT). Full `-Pmysql-it` run: 209 tests, whose only failure is
+  `FlywayMySqlIntegrationTest` — it asserts the target schema is still empty and therefore
+  cannot run after V1–V5 have been applied; excluding that empty-schema gate, **208/208**
+  pass. No frontend or OpenAPI change in this pass, so those gates were not re-run.
+- Still open: the eight Step 1 PO parameters, `DictionaryView.vue` / `openapi.yaml`
+  (deferred), V6 change log / publication barrier, and an independent review of this pass.

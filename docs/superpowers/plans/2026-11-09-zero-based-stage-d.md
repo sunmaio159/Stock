@@ -59,6 +59,14 @@ treatment as Stage C's `PostsView.vue`; no product API/UI was invented. Interfac
 (`DocumentRevision` carries `body_hash` + raw reference, not text) and the full as-built
 record: `.superpowers/sdd/2026-11-09-zero-based-stage-d/task-1-brief.md`.
 
+**Scope note addendum (2026-11-15, later pass):** owner then asked to widen only the
+parameter-independent persistence/constraint coverage and leave the parameter decisions for
+last. That pass added `com.aquila.sentiment.SentimentStore` (parameter-free persistence of
+per-revision results and version-keyed windows, so the brief's "逐文结果持久化服务" gap is
+closed) plus `SentimentPersistenceIntegrationTest`, and widened
+`SentimentSchemaIntegrationTest` from 6 to 12 cases. No PO value, table or migration changed;
+Step 1 is still unsigned and Steps 1–5 stay `[ ]`. Details: brief §6.
+
 - [ ] **Step 1: Freeze analysis and aggregation parameters**
 
 PO approves label/score mapping, confidence interpretation, multi-security eligibility rules and aggregation policy version; record a fixed labeled evaluation set.
