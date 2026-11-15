@@ -131,6 +131,55 @@ class LifecycleRaceIntegrationTest {
         assertThat(jobState(fixture.jobId())).isEqualTo("CLAIMED");
     }
 
+    /**
+     * Audit 2026-11-15: plain time passage must block a derived commit. The source stays
+     * ACTIVE with every grant intact, but its licensed validity window ends between
+     * computation and commit; without the FOR UPDATE window recheck in LifecycleGuard this
+     * test is red (outcome COMPLETE, pointer advanced, marker consumed).
+     */
+    @Test
+    void expiredValidityWindowBlocksDerivedWrites() {
+        Fixture fixture = prepare();
+        JobLease lease = worker.claim(fixture.jobId());
+        assertThat(lease).isNotNull();
+
+        worker.setBeforeCommitHook(() -> updateOnSeparateConnection("""
+                UPDATE m3_source_config SET valid_to = NOW(6) - INTERVAL 1 SECOND
+                WHERE source_code = ?
+                """, GovernanceFixture.SOURCE_CODE));
+
+        JobOutcome outcome = worker.process(lease);
+
+        assertThat(outcome.state()).isEqualTo("REVOKED");
+        assertThat(jobState(fixture.jobId())).isEqualTo("REVOKED");
+        assertThat(revisionStatus(fixture.revision().docRevisionId())).isEqualTo("OBSERVED");
+        assertThat(processedOrder(fixture.revision().docId())).isZero();
+        assertThat(dirtyMentions(fixture.revision().docRevisionId())).isEqualTo(1);
+        assertThat(unconsumedMarkers(fixture.revision().docRevisionId())).isEqualTo(1);
+    }
+
+    /** Symmetric case: a window that has not started yet must block the derived commit. */
+    @Test
+    void futureValidityStartBlocksDerivedWrites() {
+        Fixture fixture = prepare();
+        JobLease lease = worker.claim(fixture.jobId());
+        assertThat(lease).isNotNull();
+
+        worker.setBeforeCommitHook(() -> updateOnSeparateConnection("""
+                UPDATE m3_source_config
+                SET valid_from = NOW(6) + INTERVAL 1 DAY
+                WHERE source_code = ?
+                """, GovernanceFixture.SOURCE_CODE));
+
+        JobOutcome outcome = worker.process(lease);
+
+        assertThat(outcome.state()).isEqualTo("REVOKED");
+        assertThat(jobState(fixture.jobId())).isEqualTo("REVOKED");
+        assertThat(revisionStatus(fixture.revision().docRevisionId())).isEqualTo("OBSERVED");
+        assertThat(processedOrder(fixture.revision().docId())).isZero();
+        assertThat(unconsumedMarkers(fixture.revision().docRevisionId())).isEqualTo(1);
+    }
+
     private Fixture prepare() {
         String raw = GovernanceFixture.insertRawRecord(jdbc, "POST-LIFE", "hash-life");
         DocumentRevision revision = revisions.receive(GovernanceFixture.observed(
@@ -183,6 +232,14 @@ class LifecycleRaceIntegrationTest {
         Integer value = jdbc.queryForObject("""
                 SELECT COUNT(*) FROM m4_entity_mention
                 WHERE doc_revision_id = ? AND is_dirty = TRUE
+                """, Integer.class, docRevisionId);
+        return value == null ? 0 : value;
+    }
+
+    private int unconsumedMarkers(String docRevisionId) {
+        Integer value = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM m4_recompute_marker
+                WHERE doc_revision_id = ? AND consumed_at IS NULL
                 """, Integer.class, docRevisionId);
         return value == null ? 0 : value;
     }

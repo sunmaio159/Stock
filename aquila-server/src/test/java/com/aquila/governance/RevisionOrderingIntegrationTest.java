@@ -8,7 +8,7 @@ import com.aquila.crawl.ProcessingJobWorker;
 import com.aquila.masterdata.MasterDataFixture;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -147,6 +147,11 @@ class RevisionOrderingIntegrationTest {
      * snapshot taken before the doc row lock hides the first transaction's revision and
      * silently allocates a second order. This test is intentionally run against real MySQL
      * with two threads (each gets its own connection/transaction).
+     *
+     * <p>Stage C round-3 M-3: a single CountDownLatch could let the first worker finish
+     * before the second starts, silently degrading to a sequential replay. A CyclicBarrier
+     * holds BOTH workers back until they are genuinely side by side, and the assertions
+     * then cover every derived row, not just revisions and jobs.
      */
     @Test
     void concurrentLocalOrderRedeliveryCreatesOneRevision() throws Exception {
@@ -155,24 +160,34 @@ class RevisionOrderingIntegrationTest {
                 "POST-6", null, "hash-concurrent", raw, GovernanceFixture.SECURITY_A);
 
         ExecutorService pool = Executors.newFixedThreadPool(2);
-        CountDownLatch start = new CountDownLatch(1);
+        CyclicBarrier barrier = new CyclicBarrier(2);
         try {
             List<Future<DocumentRevision>> futures = new ArrayList<>();
             for (int index = 0; index < 2; index++) {
                 futures.add(pool.submit(() -> {
-                    start.await();
+                    // Both workers wait here; neither runs receive() until both arrived.
+                    barrier.await(30, TimeUnit.SECONDS);
                     return revisions.receive(document);
                 }));
             }
-            start.countDown();
+            List<DocumentRevision> results = new ArrayList<>();
             for (Future<DocumentRevision> future : futures) {
-                future.get(30, TimeUnit.SECONDS);
+                results.add(future.get(30, TimeUnit.SECONDS));
             }
+            // Both callers must be handed the SAME revision at the SAME local order.
+            assertThat(results.get(0).docRevisionId())
+                    .isEqualTo(results.get(1).docRevisionId());
+            assertThat(results.get(0).revisionOrder()).isEqualTo(1);
+            assertThat(results.get(1).revisionOrder()).isEqualTo(1);
         } finally {
             pool.shutdownNow();
         }
 
+        assertThat(count("SELECT COUNT(*) FROM m4_normalized_doc")).isEqualTo(1);
         assertThat(count("SELECT COUNT(*) FROM m4_doc_revision")).isEqualTo(1);
+        assertThat(count("SELECT COUNT(*) FROM m4_doc_quality")).isEqualTo(1);
+        assertThat(count("SELECT COUNT(*) FROM m4_entity_mention")).isEqualTo(1);
+        assertThat(count("SELECT COUNT(*) FROM m4_recompute_marker")).isEqualTo(1);
         assertThat(count("SELECT COUNT(*) FROM m3_processing_job WHERE doc_revision_id IS NOT NULL"))
                 .isEqualTo(1);
         assertThat(jdbc.queryForObject("""

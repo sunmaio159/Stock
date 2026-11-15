@@ -1,6 +1,7 @@
 package com.aquila.sourcepolicy;
 
 import com.aquila.common.ApiException;
+import java.time.Clock;
 import java.time.Instant;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.dao.EmptyResultDataAccessException;
@@ -20,9 +21,16 @@ import org.springframework.stereotype.Service;
 public class SourcePolicy {
 
     private final JdbcTemplate jdbc;
+    private volatile Clock clock;
 
-    public SourcePolicy(JdbcTemplate jdbc) {
+    public SourcePolicy(JdbcTemplate jdbc, Clock clock) {
         this.jdbc = jdbc;
+        this.clock = clock == null ? Clock.systemUTC() : clock;
+    }
+
+    /** Test seam: overrides the clock used for validity-window checks. Production never calls it. */
+    public void setClock(Clock clock) {
+        this.clock = clock == null ? Clock.systemUTC() : clock;
     }
 
     /** Require the permission or throw {@link ApiException} (fail closed). */
@@ -61,7 +69,7 @@ public class SourcePolicy {
         if (!"ACTIVE".equals(row.status())) {
             throw new ApiException(HttpStatus.FORBIDDEN, "Source permission is " + row.status());
         }
-        Instant now = Instant.now();
+        Instant now = clock.instant();
         if (now.isBefore(row.validFrom())
                 || (row.validTo() != null && !now.isBefore(row.validTo()))) {
             throw new ApiException(HttpStatus.FORBIDDEN, "Source permission is outside its validity window");

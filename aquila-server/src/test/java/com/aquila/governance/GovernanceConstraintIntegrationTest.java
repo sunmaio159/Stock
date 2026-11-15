@@ -9,18 +9,24 @@ import com.aquila.crawl.JobLease;
 import com.aquila.crawl.JobOutcome;
 import com.aquila.crawl.ProcessingJobWorker;
 import com.aquila.masterdata.MasterDataFixture;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Duration;
+import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Constraint-level falsifying tests for the Stage C Task 2 as-built spec (owner decision D4).
@@ -38,7 +44,10 @@ class GovernanceConstraintIntegrationTest {
     private static final String BODY_HASH = "hash-constraint";
 
     @Autowired private JdbcTemplate jdbc;
+    @Autowired private DataSource dataSource;
+    @Autowired private TransactionTemplate transactions;
     @Autowired private RevisionService revisions;
+    @Autowired private LifecycleGuard guard;
     @Autowired private ProcessingJobWorker worker;
 
     @DynamicPropertySource
@@ -152,6 +161,92 @@ class GovernanceConstraintIntegrationTest {
         assertThat(jobState(fixture.jobId())).isEqualTo("COMPLETE");
     }
 
+    /**
+     * Stage C round-3 M-1: a stale worker's recovery diagnostic must not overwrite the
+     * new owner's bookkeeping. Removing the {@code state + fencing_token} predicate from
+     * the diagnostic UPDATE makes this red (last_error becomes the stale token message
+     * and retry_count is bumped).
+     */
+    @Test
+    void staleWorkerDiagnosticCannotOverwriteANewOwner() {
+        Fixture fixture = prepare();
+        worker.setBeforeCommitHook(() -> {
+            // A new owner reclaims the job mid-flight: token bumped, its own diagnostic set.
+            updateOnSeparateConnection("""
+                    UPDATE m3_processing_job
+                    SET fencing_token = fencing_token + 1, last_error = 'new-owner'
+                    WHERE job_id = ?
+                    """, fixture.jobId());
+        });
+
+        assertThat(worker.recover()).isZero();
+
+        assertThat(lastError(fixture.jobId())).isEqualTo("new-owner");
+        assertThat(retryCount(fixture.jobId())).isZero();
+        assertThat(jobState(fixture.jobId())).isEqualTo("CLAIMED");
+    }
+
+    /**
+     * Stage C round-3 M-1: a failure of the diagnostic write itself must not abort the
+     * recovery batch. Removing the narrow per-job catch around recordRecoverableFailure
+     * makes this red (recover() throws and the good job is never reached).
+     */
+    @Test
+    void diagnosticWriteFailureDoesNotAbortTheBatch() {
+        Fixture fixture = prepare();
+        // A bad job scanned first: its dangling raw record makes process() fail per job.
+        jdbc.update("""
+                INSERT INTO m3_processing_job
+                    (job_id, input_type, input_key, source_code, raw_record_id, fetched_date,
+                     stage, processor_version, input_revision, state, fencing_token,
+                     retry_count, created_at, updated_at)
+                SELECT UUID(), input_type, CONCAT(input_key, '-bad'), source_code,
+                       'raw-missing', fetched_date, stage, processor_version, input_revision,
+                       'PENDING', 0, 0, DATE_SUB(NOW(6), INTERVAL 1 DAY), NOW(6)
+                FROM m3_processing_job WHERE job_id = ?
+                """, fixture.jobId());
+
+        ProcessingJobWorker diagnosticsDown = new ProcessingJobWorker(jdbc, transactions, guard, revisions) {
+            @Override
+            protected void recordRecoverableFailure(
+                    JobLease lease, ApiException exception) {
+                throw new DataAccessResourceFailureException("diagnostic store is down");
+            }
+        };
+
+        assertThat(diagnosticsDown.recover()).isEqualTo(1);
+        assertThat(jobState(fixture.jobId())).isEqualTo("COMPLETE");
+        // The bad job stays recoverable rather than vanishing into a wrong terminal state.
+        assertThat(jobState(badJobId())).isEqualTo("CLAIMED");
+    }
+
+    /**
+     * Audit 2026-11-15 (marker consistency): deleting the authoritative recompute marker
+     * while dirty mentions remain must block the whole derived commit. Ignoring the two
+     * UPDATE row counts makes this red (outcome COMPLETE, dirty flag cleared, pointer
+     * advanced, and no recompute signal consumed at all).
+     */
+    @Test
+    void missingMarkerBlocksTheCommitAndLeavesEverythingOutstanding() {
+        Fixture fixture = prepare();
+        String revisionId = fixture.revision().docRevisionId();
+        jdbc.update("""
+                DELETE FROM m4_recompute_marker WHERE doc_revision_id = ?
+                """, revisionId);
+        assertThat(unconsumedMarkers(revisionId)).isZero();
+        assertThat(dirtyMentions(revisionId)).isEqualTo(1);
+
+        JobLease lease = worker.claim(fixture.jobId());
+        assertThat(lease).isNotNull();
+        JobOutcome outcome = worker.process(lease);
+
+        assertThat(outcome.state()).isEqualTo("REVOKED");
+        assertThat(jobState(fixture.jobId())).isEqualTo("REVOKED");
+        assertThat(status(revisionId)).isEqualTo("OBSERVED");
+        assertThat(processedOrder(fixture.revision().docId())).isZero();
+        assertThat(dirtyMentions(revisionId)).isEqualTo(1);
+    }
+
     @Test
     void jobWithMissingRevisionBecomesNonRetryableTerminal() {
         Fixture fixture = prepare();
@@ -201,8 +296,7 @@ class GovernanceConstraintIntegrationTest {
                 .isInstanceOf(ApiException.class)
                 .satisfies(cause -> assertThat(((ApiException) cause).status())
                         .isEqualTo(HttpStatus.FORBIDDEN));
-        assertThat(countRevisions()).isZero();
-        assertThat(countDocJobs()).isZero();
+        assertNoGovernanceWrites();
     }
 
     /** A missing per-capability grant must fail closed even when the source is ACTIVE. */
@@ -219,20 +313,28 @@ class GovernanceConstraintIntegrationTest {
                 .isInstanceOf(ApiException.class)
                 .satisfies(cause -> assertThat(((ApiException) cause).status())
                         .isEqualTo(HttpStatus.FORBIDDEN));
-        assertThat(countRevisions()).isZero();
-        assertThat(countDocJobs()).isZero();
+        assertNoGovernanceWrites();
     }
 
-    private int countRevisions() {
-        Integer value = jdbc.queryForObject(
-                "SELECT COUNT(*) FROM m4_doc_revision", Integer.class);
-        return value == null ? 0 : value;
+    /**
+     * Stage C round-3 M-2: a refused receive() must leave every governance table empty,
+     * not merely zero revisions and zero jobs. m4_normalized_doc = 0 in particular catches
+     * a doc shell surviving in an inner transaction while the policy refuses later.
+     * m3_raw_record is the test's own input and is deliberately not asserted here.
+     */
+    private void assertNoGovernanceWrites() {
+        assertThat(count("SELECT COUNT(*) FROM m4_normalized_doc")).isZero();
+        assertThat(count("SELECT COUNT(*) FROM m4_doc_revision")).isZero();
+        assertThat(count("SELECT COUNT(*) FROM m4_doc_quality")).isZero();
+        assertThat(count("SELECT COUNT(*) FROM m4_entity_mention")).isZero();
+        assertThat(count("SELECT COUNT(*) FROM m4_recompute_marker")).isZero();
+        assertThat(count(
+                "SELECT COUNT(*) FROM m3_processing_job WHERE doc_revision_id IS NOT NULL"))
+                .isZero();
     }
 
-    private int countDocJobs() {
-        Integer value = jdbc.queryForObject(
-                "SELECT COUNT(*) FROM m3_processing_job WHERE doc_revision_id IS NOT NULL",
-                Integer.class);
+    private int count(String sql) {
+        Integer value = jdbc.queryForObject(sql, Integer.class);
         return value == null ? 0 : value;
     }
 
@@ -271,6 +373,40 @@ class GovernanceConstraintIntegrationTest {
     private String jobState(String jobId) {
         return jdbc.queryForObject("SELECT state FROM m3_processing_job WHERE job_id = ?",
                 String.class, jobId);
+    }
+
+    private String badJobId() {
+        return jdbc.queryForObject("""
+                SELECT job_id FROM m3_processing_job WHERE raw_record_id = 'raw-missing'
+                """, String.class);
+    }
+
+    private String lastError(String jobId) {
+        return jdbc.queryForObject("""
+                SELECT last_error FROM m3_processing_job WHERE job_id = ?
+                """, String.class, jobId);
+    }
+
+    private int retryCount(String jobId) {
+        Integer value = jdbc.queryForObject("""
+                SELECT retry_count FROM m3_processing_job WHERE job_id = ?
+                """, Integer.class, jobId);
+        return value == null ? 0 : value;
+    }
+
+    /** A raw, non-Spring-managed connection: the worker transaction must not see it as its own. */
+    private void updateOnSeparateConnection(String sql, Object... parameters) {
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(true);
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                for (int index = 0; index < parameters.length; index++) {
+                    statement.setObject(index + 1, parameters[index]);
+                }
+                statement.executeUpdate();
+            }
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Separate-connection fixture failed", exception);
+        }
     }
 
     private long processedOrder(String docId) {

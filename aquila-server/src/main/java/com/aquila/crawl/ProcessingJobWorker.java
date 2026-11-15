@@ -10,6 +10,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -30,6 +32,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 @ConditionalOnProperty(name = "aquila.database.enabled", havingValue = "true")
 public class ProcessingJobWorker {
+
+    private static final Logger logger = LoggerFactory.getLogger(ProcessingJobWorker.class);
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
@@ -83,8 +87,9 @@ public class ProcessingJobWorker {
                 """, (resultSet, rowNumber) -> resultSet.getString("job_id"), now);
         int processed = 0;
         for (String jobId : candidates) {
+            JobLease lease = null;
             try {
-                JobLease lease = claim(jobId);
+                lease = claim(jobId);
                 if (lease != null && process(lease) != null) {
                     processed++;
                 }
@@ -97,15 +102,41 @@ public class ProcessingJobWorker {
                 // condition. Skipping it lets the rest of the batch recover; the job stays
                 // for the next scan, and claim() already reclaims expired CLAIMED leases.
                 // Round-2 M-1: make the skip observable instead of silently dropping it.
-                jdbc.update("""
-                        UPDATE m3_processing_job
-                        SET last_error = LEFT(?, 512), retry_count = retry_count + 1,
-                            updated_at = NOW(6)
-                        WHERE job_id = ?
-                        """, exception.getMessage(), jobId);
+                try {
+                    recordRecoverableFailure(lease, exception);
+                } catch (org.springframework.dao.DataAccessException diagnosticFailure) {
+                    // Stage C round-3 M-1: the diagnostic write itself must not abort the
+                    // rest of the recovery batch. Only this narrow catch is swallowed; a
+                    // systemic database failure during processing still escapes recover().
+                    logger.warn("Recovery diagnostic write failed for job {}: {}",
+                            jobId, diagnosticFailure.getMessage());
+                }
             }
         }
         return processed;
+    }
+
+    /**
+     * Fenced per-job diagnostic update (Stage C round-3 M-1). Only the owner of the current
+     * claim may record the failure: the {@code state + fencing_token} predicate keeps a
+     * diagnostic write from overwriting a job that has since been reclaimed by a new owner.
+     * A lease that was never claimed has no reliable token, so nothing is recorded.
+     *
+     * @throws org.springframework.dao.DataAccessException when the write fails; recover()
+     *         isolates that per job instead of aborting the batch
+     */
+    protected void recordRecoverableFailure(JobLease lease, ApiException exception) {
+        if (lease == null) {
+            return;
+        }
+        jdbc.update("""
+                UPDATE m3_processing_job
+                SET last_error = LEFT(?, 512), retry_count = retry_count + 1,
+                    updated_at = NOW(6)
+                WHERE job_id = ?
+                  AND state = 'CLAIMED'
+                  AND fencing_token = ?
+                """, exception.getMessage(), lease.jobId(), lease.fencingToken());
     }
 
     public JobLease claim(String jobId) {
@@ -182,17 +213,29 @@ public class ProcessingJobWorker {
                                 "REVOKED", "Revision is not in OBSERVED state");
                     }
                     revisionService.advanceProcessedPointer(ref.docId(), ref.revisionOrder());
-                    jdbc.update("""
+                    int dirtyCleared = jdbc.update("""
                             UPDATE m4_entity_mention SET is_dirty = FALSE
                             WHERE doc_revision_id = ?
                             """, ref.docRevisionId());
                     // D4: the marker is the authoritative recompute signal. Consume it in
                     // this same transaction as the dirty-flag clear; on a blocked commit
                     // the whole transaction rolls back and both stay outstanding.
-                    jdbc.update("""
+                    int markersConsumed = jdbc.update("""
                             UPDATE m4_recompute_marker SET consumed_at = NOW(6)
                             WHERE doc_revision_id = ? AND consumed_at IS NULL
                             """, ref.docRevisionId());
+                    // Audit 2026-11-15: dirty mentions and their recompute marker are
+                    // written together by receive(), so one side being missing is an
+                    // out-of-band inconsistency. Completing anyway would clear the dirty
+                    // flag and advance the pointer while silently consuming no recompute
+                    // signal; block the whole commit instead. The 0 == 0 shape (no
+                    // mentions and no marker) is legitimate and still completes.
+                    if ((dirtyCleared > 0) != (markersConsumed > 0)) {
+                        throw new LifecycleBlockedException("REVOKED",
+                                "Recompute marker and dirty mentions are out of sync: "
+                                        + dirtyCleared + " dirty cleared, "
+                                        + markersConsumed + " markers consumed");
+                    }
                 }
 
                 int updated = jdbc.update("""

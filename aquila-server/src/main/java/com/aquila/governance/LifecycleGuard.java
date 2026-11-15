@@ -1,5 +1,7 @@
 package com.aquila.governance;
 
+import java.time.Clock;
+import java.time.Instant;
 import java.util.List;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -12,16 +14,25 @@ import org.springframework.stereotype.Service;
  * plain read started when the job was claimed would keep showing the pre-revocation
  * snapshot, so a revoke committed by another connection between "compute" and "commit"
  * would be invisible. {@code FOR UPDATE} bypasses the snapshot and observes the latest
- * committed lifecycle status, lifecycle version and source grants.
+ * committed lifecycle status, lifecycle version, source grants and the licensed-source
+ * validity window (audit 2026-11-15: plain time passage must expire a derived commit,
+ * not just an explicit revoke).
  */
 @Service
 @ConditionalOnProperty(name = "aquila.database.enabled", havingValue = "true")
 public class LifecycleGuard {
 
     private final JdbcTemplate jdbc;
+    private volatile Clock clock;
 
-    public LifecycleGuard(JdbcTemplate jdbc) {
+    public LifecycleGuard(JdbcTemplate jdbc, Clock clock) {
         this.jdbc = jdbc;
+        this.clock = clock == null ? Clock.systemUTC() : clock;
+    }
+
+    /** Test seam: overrides the clock used for validity-window checks. Production never calls it. */
+    public void setClock(Clock clock) {
+        this.clock = clock == null ? Clock.systemUTC() : clock;
     }
 
     public void assertCommittable(DocRef ref, long capturedLifecycleVersion) {
@@ -46,11 +57,16 @@ public class LifecycleGuard {
         }
 
         List<SourceRow> sources = jdbc.query("""
-                SELECT permission_status, perm_analyze, perm_store_normalized
+                SELECT permission_status, perm_analyze, perm_store_normalized,
+                       valid_from, valid_to
                 FROM m3_source_config
                 WHERE source_code = ? FOR UPDATE
                 """, (resultSet, rowNumber) -> new SourceRow(
-                        resultSet.getString(1), resultSet.getBoolean(2), resultSet.getBoolean(3)),
+                        resultSet.getString(1), resultSet.getBoolean(2), resultSet.getBoolean(3),
+                        resultSet.getTimestamp(4) == null
+                                ? null : resultSet.getTimestamp(4).toInstant(),
+                        resultSet.getTimestamp(5) == null
+                                ? null : resultSet.getTimestamp(5).toInstant()),
                 ref.sourceCode());
         if (sources.isEmpty()) {
             throw new LifecycleBlockedException("REVOKED", "Source configuration is missing");
@@ -61,6 +77,16 @@ public class LifecycleGuard {
                 || !source.storeNormalizedGranted()) {
             throw new LifecycleBlockedException(
                     "REVOKED", "Source permission revoked or capability withheld");
+        }
+        // Same boundary semantics as SourcePolicy: [valid_from, valid_to) with an open
+        // upper end, checked as a current read so an expiry committed between compute
+        // and commit blocks the derived write.
+        Instant now = clock.instant();
+        if (source.validFrom() == null
+                || now.isBefore(source.validFrom())
+                || (source.validTo() != null && !now.isBefore(source.validTo()))) {
+            throw new LifecycleBlockedException(
+                    "REVOKED", "Source permission is outside its validity window");
         }
     }
 
@@ -89,5 +115,6 @@ public class LifecycleGuard {
     private record LifecycleRow(String status, long version) {}
 
     private record SourceRow(
-            String status, boolean analyzeGranted, boolean storeNormalizedGranted) {}
+            String status, boolean analyzeGranted, boolean storeNormalizedGranted,
+            Instant validFrom, Instant validTo) {}
 }
