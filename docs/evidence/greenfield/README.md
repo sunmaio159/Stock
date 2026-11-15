@@ -1065,7 +1065,7 @@ DATABASE` never runs under `aquila_migrate`.
 - Frontend four gates: `typecheck`, `openapi:lint` (valid), `build` — all pass.
 - No regression in the prior crawl/coverage ITs.
 
-### Stage C Task 2 — migration numbering alignment & V4 scope (owner decision 2026-11-15)
+### Stage C Task 2 — migration numbering alignment & V4 scope (owner decision 2026-11-15, **D3**)
 
 Owner decision reconciling the Stage C plan (Task 2 writes `V4__document_processing.sql`) with the
 `docs/database/schema-v1.md` logical ownership map (which pre-allocated the `m4_*` revision/mention
@@ -1091,4 +1091,88 @@ carries `retry_count`/`last_error`/`DEAD_LETTER`), a separate dead-letter table 
 and any placeholder tables for D/E/F. **Dead letter therefore needs no independent table** (owner
 decision 2026-11-15). The four governance edits (schema-v1 `as-built` backfill, plan Task 2 V4
 boundary, roadmap numbering note, this entry) were applied in a single doc-only commit; no project
-code was touched.
+code was touched. This entry is the **D3** reference cited at the head of
+`V4__document_processing.sql`.
+
+### Stage C Task 2 — as-built spec alignment, eight deviations closed (owner-requested 2026-11-15, **D4**)
+
+Owner instruction 2026-11-15 18:03: *"与规格的偏离（4 个 P0 必要修正 + 4 个 P1）这个先修复"*.
+The four P0 items were required to make the spec executable at all; the four P1 items were
+spec gaps. Both sets are now either implemented as written or formally superseded by the
+as-built spec at `.superpowers/sdd/2026-11-09-zero-based-stage-c/task-2-brief.md` §4, so
+**no deviation remains open**. Same 规格 as D2/A1/B1/C1/D3: a spec/code alignment, **not** a
+product-scope change — no Stage D/E/F object, no placeholder table, no full commit-ordered
+change log was created.
+
+| # | Closed as | Change made in this pass |
+|---|---|---|
+| P0-1 | Composite FK prerequisite | V4 adds `UNIQUE (raw_record_id, fetched_date)` on the applied V3 `m3_raw_record`; MySQL 8.4 rejects an FK onto a non-unique key and V3 must not be edited |
+| P0-2 | Atomic CHECK replacement | The `DROP CHECK` + `ADD CHECK` for `EXPIRED`/`REVOKED` are now **one** `ALTER`; MySQL DDL commits implicitly, so two statements could leave a half-migrated schema |
+| P0-3 | Job → revision carrier + orphan rule | V3 `m3_processing_job` gains `doc_revision_id` / `captured_lifecycle_version` (B1 "may extend"); no reverse FK; a dangling revision is now a non-retryable `REVOKED` job instead of an `ApiException` leaving it stuck in `CLAIMED` |
+| P0-4 | Current-read race + seam scoping | Guard reads stay `FOR UPDATE`; the test-only `beforeCommitHook` is now confined to document-revision jobs so Task 1 crawl paths cannot invoke injected behaviour |
+| P1-1 | Immutable revision, enforced | `content_fingerprint` (SQL `SHA2(CONCAT_WS(...))` over stored content columns) + `LifecycleGuard.assertContentUnchanged` + `UNIQUE(doc_id, revision_order)` + `WHERE status='OBSERVED'` CAS, instead of a Java-only convention |
+| P1-2 | Dirty flag / marker contract | `m4_recompute_marker.consumed_at` is the authoritative recompute-owed signal; the derived commit clears `is_dirty` **and** consumes the marker in one transaction (blocked commits roll both back) |
+| P1-3 | Marker idempotency | Surrogate PK, `UNIQUE(doc_revision_id, security_code, marker_type)`, `doc_revision_id` FK and pending index |
+| P1-4 | Nullable cycle FK | `fk_m4_doc_current_revision` added by `ALTER` after both tables exist |
+
+**Rejected alternative (audit evidence).** A `BEFORE UPDATE` trigger enforcing immutability
+at the DDL level was implemented and replayed, and failed on this MySQL 8.4 instance with
+`SQL State HY000 / Error Code 1419: You do not have the SUPER privilege and binary logging is
+enabled`. The scoped `aquila_migrate` account must not receive SUPER, and
+`log_bin_trust_function_creators=1` is a server-level change outside this project's authority.
+The trigger was removed and replaced by the fingerprint + CAS controls. Honest consequence:
+a *privileged direct UPDATE* can still alter a content column, but no derived commit can
+follow it and the mismatch is always detectable.
+
+**Falsifying verification.** Four new constraint tests (`GovernanceConstraintIntegrationTest`)
+failed 4/4 before the fix (content mutable, status regressible, `ApiException: Document
+revision is missing`, `Unknown column 'consumed_at'`). A falsification probe removing the
+fingerprint check, marker consumption and orphan rule produced exactly **3 red / 1 green**;
+restoring all three produced green. C1 `flyway:clean` on the verified isolated schema
+`stock_greenfield_20261109` followed by V1–V4 replay (V1–V3 checksums unchanged), focused
+governance + crawl regression **13/13**, full backend `-Pmysql-it` **167/167** with
+`-DargLine=-Dspring.test.context.cache.maxSize=4`, frontend four gates all pass.
+`FlywayMySqlIntegrationTest` is excluded from the full-suite command by design (it requires an empty schema) and passed **1/1** separately after a C1 clean; a plugin `flyway:migrate` then replayed V1–V4 to `v4`.
+
+### Stage C Task 2 — implementation record and evidence register (2026-11-15)
+
+**Delivered:** `V4__document_processing.sql` (five `m4_*` tables plus three additive `ALTER`s on
+the applied V3 tables), `com.aquila.governance` (six classes), the `ProcessingJobWorker` commit
+barrier, and four IT classes (FT-02 3, FT-03 3, constraint 4). As-built spec:
+`.superpowers/sdd/2026-11-09-zero-based-stage-c/task-2-brief.md`; owner decisions D3
+(numbering) and D4 (eight deviations) are recorded above.
+
+**Commands / results (MySQL 8.4, isolated `stock_greenfield_20261109`):**
+
+- `mvn -f aquila-server/pom.xml flyway:clean` (C1) → empty-schema gate
+  `FlywayMySqlIntegrationTest` **1/1** → `flyway:migrate` replayed V1–V4 to `v4`, V1–V3
+  checksums unchanged.
+- Focused `-Pmysql-it` governance + crawl regression **13/13**; full backend
+  `-Pmysql-it -DargLine=-Dspring.test.context.cache.maxSize=4 -Dtest='*,!FlywayMySqlIntegrationTest' test`
+  **167/167**.
+- Frontend four gates: `typecheck`, `openapi:lint` (valid), `vitest` 5/5, `vite build` — all pass.
+- Falsification: the four constraint tests were red **4/4** before the fix; a probe removing
+  the fingerprint check, marker consumption and orphan rule gave exactly **3 red / 1 green**;
+  restoring all three gave green.
+
+**Acceptance-item evidence update (plan Step 4):**
+
+- **G02 — still `OPEN`.** Task 2 uses the fixture adapter only; no real licensed source is
+  touched, so nothing here constitutes real-source licence evidence.
+- **COV-01 — still `OPEN`.** Task 2 does not modify the Task 1 coverage proof; FT-01, the source
+  capability matrix and window reconciliation remain to be established.
+- **LIFE-01 — C-stage initial test established, item still `OPEN`.**
+  `LifecycleRaceIntegrationTest` (FT-03, 3/3) and `GovernanceConstraintIntegrationTest` (4/4)
+  are the worker lifecycle commit-barrier initial evidence: revoke/expiry before commit,
+  non-retryable terminal states, no derived-content resurrection, and content-fingerprint /
+  recompute-marker invariants. The Stage F residue scan and recovery report are still pending,
+  so the register item is not passed.
+
+**Registry `C-T2-01`:** implementation complete and gates green, but **PENDING independent
+review** — Stage C Task 1 required four review rounds before `C-T1-01` could move to `PASSED`,
+so a green test run alone is not acceptance evidence. Task 2 Steps stay `[ ]` until that review
+is `APPROVED`; the implementation commit is the review subject, not a closure marker.
+
+**Committed:** `feat: add immutable revisions and lifecycle guards` with the required co-author
+trailer, staging only Task 2 paths; unrelated `落地文档设计/` working-tree changes are left
+untouched.

@@ -72,18 +72,27 @@ Expected: PASS; first committed page remains PARTIAL until all required pages/te
 
 ### Task 2: Revisions, Fencing, Mentions, and Lifecycle Barrier
 
-**Files:**
-- Create: `aquila-server/src/main/java/com/aquila/governance/RevisionService.java`
-- Create: `aquila-server/src/main/java/com/aquila/governance/LifecycleGuard.java`
-- Create: `aquila-server/src/test/java/com/aquila/governance/RevisionOrderingIntegrationTest.java`
-- Create: `aquila-server/src/test/java/com/aquila/governance/LifecycleRaceIntegrationTest.java`
+**Files (as delivered 2026-11-15):**
 - Create: `aquila-server/src/main/resources/db/migration/V4__document_processing.sql`
-- Create: `aquila-web/src/views/PostsView.vue`
-- Modify: `docs/api/openapi.yaml`
-- Modify: `docs/database/schema-v1.md`
-- Modify: `docs/evidence/greenfield/README.md`
+- Create: `com/aquila/governance/`: `RevisionService`, `LifecycleGuard`, `ObservedDocument`, `DocumentRevision`, `DocRef`, `LifecycleBlockedException`
+- Create: `com/aquila/governance/` tests: `GovernanceFixture`, `RevisionOrderingIntegrationTest`, `LifecycleRaceIntegrationTest`, `GovernanceConstraintIntegrationTest`
+- Modify: `aquila-server/src/main/java/com/aquila/crawl/ProcessingJobWorker.java`
+- Modify: `docs/database/schema-v1.md`, `docs/evidence/greenfield/README.md`, this plan
+- As-built spec (git-ignored, not staged): `.superpowers/sdd/2026-11-09-zero-based-stage-c/task-2-brief.md`
+
+**Scope note (2026-11-15, owner confirmation pending):** the Stage A draft also listed
+`aquila-web/src/views/PostsView.vue` and `docs/api/openapi.yaml` above. None of the four Task 2
+Steps defines an HTTP endpoint or a UI action, and the owner's Task 2 spec (V4 DDL +
+`com.aquila.governance` services + FT-02/FT-03) contains neither. `GET /api/sentiment/posts`
+belongs to the Stage D aggregation/workbench design
+(`落地文档设计/Copilot/阶段实施详设/D_情绪聚合与工作台.md`), which Task 2 explicitly defers to
+`V5`/`V6`. These two files are therefore **not** counted as Task 2 acceptance gaps and are
+deferred to Stage D; no product API or UI was invented here. The lines are kept until the owner
+confirms the removal, so the discrepancy stays visible rather than silently disappearing.
 
 **V4 boundary (owner decision 2026-11-15):** `V4__document_processing.sql` is the as-built home of the `m4_normalized_doc` / `m4_doc_revision` / mention / quality / lifecycle-version tables. The logical ownership map's `V5 — C` labels for these were a Stage A pre-allocation and are now annotated `as built; was V5`; the physical chain is V1–V2 B, V3–V4 C, V5–V6 D, V7 E, V8 F. Dead-letter is carried by the V3 `m3_processing_job` (no separate table). Stage D's sentiment/analysis tables are `V5`/`V6` (map labelled `V7 — D`), Stage E's alerts `V7` (map `V8 — E`), Stage F `V8`.
+
+**As-built spec (owner-requested alignment D4, 2026-11-15):** the eight points where the original Task 2 spec was underspecified or physically impossible (composite-FK unique key, atomic job-state CHECK, job→revision carrier + orphan rule, current-read race seam, immutable-revision enforcement, dirty-flag/marker contract, marker idempotency, nullable cycle FK) are closed and recorded in `.superpowers/sdd/2026-11-09-zero-based-stage-c/task-2-brief.md` §4 and `docs/evidence/greenfield/README.md` (D4). `GovernanceConstraintIntegrationTest` is the falsifying suite for that alignment. Step 2 below should be read together with the brief; `V4__document_processing.sql` is the physical authority.
 
 **Interfaces:**
 - Produces: `RevisionService.receive(ObservedDocument): DocumentRevision`; `ProcessingJobWorker.process(JobLease): JobOutcome`; conditional latest-observed/processed pointers and mention records per immutable revision.
