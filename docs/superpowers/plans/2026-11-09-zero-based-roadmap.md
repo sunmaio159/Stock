@@ -44,7 +44,7 @@ Execute sequentially; do not start a later stage until its predecessor's tests p
 5. [Stage E — Alerts and operations](./2026-11-09-zero-based-stage-e.md): coverage-aware alerts, silence, corrections, replay/dead letters.
 6. [Stage F — Retention and release](./2026-11-09-zero-based-stage-f.md): cleanup, export safety, native deployment, backup/restore, final disposition.
 
-Each stage plan identifies its files, interfaces, tests, and commit. Database physical design is recorded in `docs/database/schema-v1.md`; V1–V8 migrations are introduced with their owning stage, not as placeholder tables. G02 source approval, G03 target-device validation, G04 backup decision/recovery, and G05 alert-quality parameters remain active stage gates.
+Each stage plan identifies its files, interfaces, tests, and commit. Database physical design is recorded in `docs/database/schema-v1.md`; V1–V8 migrations are introduced with their owning stage, not as placeholder tables. Physical migration version numbers follow each stage plan and the actual Flyway maximum version (统一方案 §7.3: increment by the existing max, never renumber an executed script); the owning-migration labels in `docs/database/schema-v1.md` are a Stage A logical pre-allocation and carry `as built; was Vn` annotations where the physical chain shifted (e.g. Stage B option A / D2 merged V2+V3, freeing V3, which Stage C Task 1 then used — see that file's numbering-alignment note). G02 source approval, G03 target-device validation, G04 backup decision/recovery, and G05 alert-quality parameters remain active stage gates.
 
 ## Execution and Review
 

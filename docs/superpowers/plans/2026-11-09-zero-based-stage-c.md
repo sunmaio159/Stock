@@ -68,7 +68,7 @@ Run: `mvn -f aquila-server/pom.xml -Pmysql-it -Dtest=CoverageServiceTest,CrawlRe
 
 Expected: PASS; first committed page remains PARTIAL until all required pages/termination evidence are proven.
 
-**Completed and accepted 2026-11-15.** The Step 4 command passed at implementation time (10/10), but that green result was explicitly not acceptance evidence: the first independent review of `ceae6fb` raised 2 Critical + 8 Important findings, and rounds 2 and 3 each returned `CHANGES_REQUIRED` again. The round-4 fix commit `0517dcc` was reviewed independently a fourth time over `03edf36..0517dcc` with verdict **APPROVED** (`.superpowers/sdd/2026-11-09-zero-based-stage-c/task-1-review-report-round4.md`): C1, C2, I1, I2 and F-1–F-5 all closed with falsifying tests, G-1 anchored on the persisted `page_terminal` flag, G-3–G-6 addressed. Round-4 verification: empty-schema gate 1/0, full `-Pmysql-it` suite 148/148 on real MySQL 8.4 (V3 replayed to v3), frontend four gates, same-origin clean jar. Commits `ceae6fb`, `c113601`, `03edf36`, `0517dcc` each carry the required co-author trailer and stage only Stage C Task 1 paths. Registry `C-T1-01` → `PASSED`. **Stage C Task 1: ACCEPTED / CLOSED.** G02 remains OPEN (fixture adapter only); the `m3_processing_job` naming and I3–I8 Task 1/Task 2 attribution remain unsigned owner-governance decisions, independent of this closure.
+**Completed and accepted 2026-11-15.** The Step 4 command passed at implementation time (10/10), but that green result was explicitly not acceptance evidence: the first independent review of `ceae6fb` raised 2 Critical + 8 Important findings, and rounds 2 and 3 each returned `CHANGES_REQUIRED` again. The round-4 fix commit `0517dcc` was reviewed independently a fourth time over `03edf36..0517dcc` with verdict **APPROVED** (`.superpowers/sdd/2026-11-09-zero-based-stage-c/task-1-review-report-round4.md`): C1, C2, I1, I2 and F-1–F-5 all closed with falsifying tests, G-1 anchored on the persisted `page_terminal` flag, G-3–G-6 addressed. Round-4 verification: empty-schema gate 1/0, full `-Pmysql-it` suite 148/148 on real MySQL 8.4 (V3 replayed to v3), frontend four gates, same-origin clean jar. Commits `ceae6fb`, `c113601`, `03edf36`, `0517dcc` each carry the required co-author trailer and stage only Stage C Task 1 paths. Registry `C-T1-01` → `PASSED`. **Stage C Task 1: ACCEPTED / CLOSED.** G02 remains OPEN (fixture adapter only); the `m3_processing_job` naming and I3–I8 Task 1/Task 2 attribution were resolved by owner signature 2026-11-15 (A1/B1/C1, recorded in `docs/evidence/greenfield/README.md` §Stage C Task 1 — 1.x fix) and are no longer unsigned owner-governance decisions.
 
 ### Task 2: Revisions, Fencing, Mentions, and Lifecycle Barrier
 
@@ -83,6 +83,8 @@ Expected: PASS; first committed page remains PARTIAL until all required pages/te
 - Modify: `docs/database/schema-v1.md`
 - Modify: `docs/evidence/greenfield/README.md`
 
+**V4 boundary (owner decision 2026-11-15):** `V4__document_processing.sql` is the as-built home of the `m4_normalized_doc` / `m4_doc_revision` / mention / quality / lifecycle-version tables. The logical ownership map's `V5 — C` labels for these were a Stage A pre-allocation and are now annotated `as built; was V5`; the physical chain is V1–V2 B, V3–V4 C, V5–V6 D, V7 E, V8 F. Dead-letter is carried by the V3 `m3_processing_job` (no separate table). Stage D's sentiment/analysis tables are `V5`/`V6` (map labelled `V7 — D`), Stage E's alerts `V7` (map `V8 — E`), Stage F `V8`.
+
 **Interfaces:**
 - Produces: `RevisionService.receive(ObservedDocument): DocumentRevision`; `ProcessingJobWorker.process(JobLease): JobOutcome`; conditional latest-observed/processed pointers and mention records per immutable revision.
 
@@ -90,9 +92,9 @@ Expected: PASS; first committed page remains PARTIAL until all required pages/te
 
 Force R1 to finish after R2; change securities mentions during revision; expire/revoke while worker computes; assert lower-order pointer update and stale lifecycle commit are rejected.
 
-- [ ] **Step 2: Add immutable revision and processing schema**
+- [ ] **Step 2: Add immutable revision and processing schema (V4 boundary)**
 
-Persist source identity, revision order, raw references, business/published/observed timestamps, parser versions, current pointers, mentions, quality, durable jobs, retries/dead letters, change log, and lifecycle version.
+Persist in `V4__document_processing.sql`, as built (the logical ownership map in `docs/database/schema-v1.md` pre-allocated these to V5 and now carries `as built; was V5` annotations): source identity, revision order, raw references, business/published/observed timestamps, parser versions, current pointers, mentions, quality, and lifecycle version. Reuse/extend the V3 `m3_processing_job` for durable jobs, retries, and dead letters — it already carries `DEAD_LETTER` state plus `retry_count` and `last_error`, so **no separate dead-letter table** is created (owner decision 2026-11-15). Do **not** build the full commit-ordered change log or aggregation windows here; those belong to Stage D (`V5`/`V6`). Keep all V4 tables in a single migration to avoid cross-migration FK ordering, referencing the already-existing `m3_raw_record` (+ partition date) and `m2_security` from V1–V3.
 
 - [ ] **Step 3: Implement ordered revision receive and worker fencing**
 

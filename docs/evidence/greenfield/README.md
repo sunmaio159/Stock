@@ -1064,3 +1064,31 @@ DATABASE` never runs under `aquila_migrate`.
   classes excluded without `-Pmysql-it`); same-origin jar built.
 - Frontend four gates: `typecheck`, `openapi:lint` (valid), `build` — all pass.
 - No regression in the prior crawl/coverage ITs.
+
+### Stage C Task 2 — migration numbering alignment & V4 scope (owner decision 2026-11-15)
+
+Owner decision reconciling the Stage C plan (Task 2 writes `V4__document_processing.sql`) with the
+`docs/database/schema-v1.md` logical ownership map (which pre-allocated the `m4_*` revision/mention
+content tables to V5). **Priority rule:** physical migration numbering follows the stage plan + actual
+Flyway versions (统一方案 §7.3: increment by the existing max, never renumber an executed script); the
+logical map backfills `as built; was Vn` labels and does **not** force Task 2 into V5 nor renumber
+D/E/F. This is a documentation self-consistency correction only — **not** a product-scope change,
+same规格 as D2/A1/B1/C1.
+
+**Why the chain shifted one place:** the map was a Stage A pre-allocation; Stage B's owner chose
+option A (D2, 2026-11-11) merging the originally V2+V3 master-data into a single V2 (freeing V3);
+Stage C Task 1 then used V3 for the `m3_*` tables the map had allocated to V4. The map had only
+backfilled the `m3_*` and `m4_processing_job` rows, leaving the content-table rows at `V5 — C`,
+which produced the "plan V4 / map V5" mismatch.
+
+**V4 scope (as built):** `m4_normalized_doc`, `m4_doc_revision`, document/security mention,
+duplicate/quality, current pointer, `revision_order`/body hash/parser version/timestamps, lifecycle
+version, and the minimal dirty / affected-window markers needed for FT-02/FT-03; FK dependencies
+(`m3_raw_record` + partition date, `m2_security`) already exist in V1–V3 and are referenced within
+the single V4. **Excluded from V4:** rebuilding `m3_processing_job` (V3 canonical, B1; already
+carries `retry_count`/`last_error`/`DEAD_LETTER`), a separate dead-letter table (carried by
+`m3_processing_job`), the full commit-ordered change log and aggregation windows (Stage D `V5`/`V6`),
+and any placeholder tables for D/E/F. **Dead letter therefore needs no independent table** (owner
+decision 2026-11-15). The four governance edits (schema-v1 `as-built` backfill, plan Task 2 V4
+boundary, roadmap numbering note, this entry) were applied in a single doc-only commit; no project
+code was touched.
