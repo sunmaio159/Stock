@@ -98,7 +98,7 @@ class SourcePermissionMatrixIntegrationTest {
         CrawlFixture.insertSourceWithGrants(jdbc, "NO-DISPLAY",
                 Permission.ACCESS, Permission.STORE_RAW, Permission.STORE_NORMALIZED, Permission.ANALYZE);
 
-        assertThatThrownBy(() -> read.coverageFacts("NO-DISPLAY"))
+        assertThatThrownBy(() -> read.coverageFacts("NO-DISPLAY", 0, 50))
                 .isInstanceOfSatisfying(ApiException.class,
                         exception -> assertThat(exception.status()).isEqualTo(HttpStatus.FORBIDDEN));
     }

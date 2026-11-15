@@ -5,14 +5,14 @@ import {
   collectSource,
   listCoverage,
   listSources,
-  type CoverageFactDto,
+  type CoverageFactPageDto,
   type CrawlResult,
   type SourceConfigDto,
 } from '../api/source';
 
 const sources = ref<SourceConfigDto[]>([]);
 const selected = ref('');
-const coverage = ref<CoverageFactDto[]>([]);
+const coverage = ref<CoverageFactPageDto | null>(null);
 const lastResult = ref<CrawlResult | null>(null);
 const loading = ref(false);
 const error = ref('');
@@ -28,11 +28,11 @@ async function loadSources(): Promise<void> {
 
 async function loadCoverage(): Promise<void> {
   if (!selected.value) {
-    coverage.value = [];
+    coverage.value = null;
     return;
   }
   const result = await listCoverage(selected.value);
-  coverage.value = result.data ?? [];
+  coverage.value = result.data ?? null;
 }
 
 async function run(work: () => Promise<void>): Promise<void> {
@@ -98,9 +98,10 @@ onMounted(() => {
     </fieldset>
 
     <h3>Coverage facts</h3>
-    <table v-if="coverage.length > 0">
+    <table v-if="coverage && coverage.items.length > 0">
       <thead>
         <tr>
+          <th>Run</th>
           <th>Page</th>
           <th>Status</th>
           <th>Reason</th>
@@ -109,7 +110,8 @@ onMounted(() => {
         </tr>
       </thead>
       <tbody>
-        <tr v-for="fact in coverage" :key="fact.pageIndex">
+        <tr v-for="fact in coverage.items" :key="fact.runId + ':' + fact.pageIndex">
+          <td>{{ fact.runId }}</td>
           <td>{{ fact.pageIndex }}</td>
           <td>{{ fact.status }}</td>
           <td>{{ fact.reason ?? '—' }}</td>

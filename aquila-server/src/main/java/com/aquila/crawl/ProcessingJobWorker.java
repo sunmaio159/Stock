@@ -1,6 +1,7 @@
 package com.aquila.crawl;
 
 import com.aquila.common.ApiException;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -25,10 +26,16 @@ public class ProcessingJobWorker {
     private final TransactionTemplate transactions;
     private final String workerOwner = UUID.randomUUID().toString();
     private final Duration leaseDuration = Duration.ofMinutes(10);
+    private Clock clock = Clock.systemUTC();
 
     public ProcessingJobWorker(JdbcTemplate jdbc, TransactionTemplate transactions) {
         this.jdbc = jdbc;
         this.transactions = transactions;
+    }
+
+    /** Override the clock used for business timestamps; defaults to the system UTC clock. */
+    public void setClock(Clock clock) {
+        this.clock = clock;
     }
 
     /** Scan all durable PENDING jobs and process them; the recovery path for missed notifications. */
@@ -48,7 +55,7 @@ public class ProcessingJobWorker {
 
     public JobLease claim(String jobId) {
         return transactions.execute(status -> {
-            Instant now = Instant.now();
+            Instant now = clock.instant();
             int updated = jdbc.update("""
                     UPDATE m3_processing_job
                     SET state = 'CLAIMED', lease_owner = ?, lease_until = ?, fencing_token = fencing_token + 1,

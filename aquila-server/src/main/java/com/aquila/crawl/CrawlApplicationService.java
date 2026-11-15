@@ -6,6 +6,7 @@ import com.aquila.sourcepolicy.SourcePolicy;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -38,6 +39,8 @@ public class CrawlApplicationService {
     private final String leaseOwner = UUID.randomUUID().toString();
     private final Duration leaseDuration = Duration.ofMinutes(10);
     private final int pageSize = 50;
+    private Clock clock = Clock.systemUTC();
+    private int maxPages = 1000;
     private PageCommitHook pageCommitHook = PageCommitHook.NOOP;
 
     public CrawlApplicationService(
@@ -57,6 +60,16 @@ public class CrawlApplicationService {
 
     public void setPageCommitHook(PageCommitHook hook) {
         this.pageCommitHook = hook == null ? PageCommitHook.NOOP : hook;
+    }
+
+    /** Override the clock used for business timestamps; defaults to the system UTC clock. */
+    public void setClock(Clock clock) {
+        this.clock = clock;
+    }
+
+    /** Upper bound on pages fetched per run; a run that would exceed it is aborted as PARTIAL. */
+    public void setMaxPages(int maxPages) {
+        this.maxPages = maxPages;
     }
 
     public CrawlResult runCollection(
@@ -86,6 +99,19 @@ public class CrawlApplicationService {
         int pageIndex = claim.resumePageIndex();
         CoverageState lastState = null;
         while (true) {
+            // Safety bound: a misbehaving or cycling adapter must not crawl forever. A run that
+            // would exceed maxPages is aborted as PARTIAL (incomplete) rather than looping.
+            if (pageIndex >= maxPages) {
+                markRun(runId, "PARTIAL");
+                lastState = new CoverageState(runId, "PARTIAL",
+                        lastState == null ? 0 : lastState.pagesTotal(),
+                        lastState == null ? 0 : lastState.pagesComplete(),
+                        lastState == null ? 0 : lastState.pagesPartial(),
+                        lastState == null ? 0 : lastState.pagesUnknown(),
+                        lastState == null ? 0 : lastState.pagesUnrecoverable(),
+                        clock.instant());
+                break;
+            }
             SourcePage page;
             try {
                 page = adapter.fetch(new SourceFetchRequest(
@@ -140,7 +166,7 @@ public class CrawlApplicationService {
                             resultSet.getLong("fencing_token")),
                     sourceCode);
             LeaseRow lease = leases.isEmpty() ? null : leases.get(0);
-            Instant now = Instant.now();
+            Instant now = clock.instant();
             if (lease != null && lease.leaseUntil() != null
                     && now.isBefore(lease.leaseUntil())
                     && !leaseOwner.equals(lease.leaseOwner())) {
@@ -178,8 +204,9 @@ public class CrawlApplicationService {
                     INSERT INTO m3_task_instance
                         (run_id, source_code, run_key, attempt, state, cursor_before,
                          fencing_token, lease_owner, lease_until, created_at, updated_at)
-                    VALUES (?, ?, ?, 1, 'RUNNING', NULL, ?, ?, ?, NOW(6), NOW(6))
-                    """, runId, sourceCode, runKey, issuedToken, leaseOwner, now.plus(leaseDuration));
+                    VALUES (?, ?, ?, 1, 'RUNNING', NULL, ?, ?, ?, ?, NOW(6))
+                    """, runId, sourceCode, runKey, issuedToken, leaseOwner, now.plus(leaseDuration),
+                    clock.instant());
             return new RunClaim(runId, issuedToken, leaseOwner, null, 0, false);
         });
     }
@@ -225,10 +252,11 @@ public class CrawlApplicationService {
                         INSERT INTO m3_raw_record
                             (raw_record_id, source_code, outer_id, fetched_date, payload_hash,
                              license_version, parse_version, payload, received_at, created_at)
-                        VALUES (?, ?, ?, CURDATE(), ?, ?, ?, ?, NOW(6), NOW(6))
+                        VALUES (?, ?, ?, CURDATE(), ?, ?, ?, ?, ?, ?)
                         ON DUPLICATE KEY UPDATE raw_record_id = raw_record_id
                         """, UUID.randomUUID().toString(), sourceCode, record.outerId(), hash,
-                        decision.licenseVersion(), decision.adapterContractVersion(), record.payload());
+                        decision.licenseVersion(), decision.adapterContractVersion(), record.payload(),
+                        clock.instant(), clock.instant());
                 // The dedup key is the identity of the fact; on conflict the already persisted
                 // reference is the only one a durable job may point at.
                 rawIds.add(jdbc.queryForObject("""
@@ -247,19 +275,19 @@ public class CrawlApplicationService {
                             (job_id, input_type, input_key, source_code, raw_record_id, fetched_date,
                              stage, processor_version, input_revision, state, fencing_token,
                              created_at, updated_at)
-                        VALUES (?, 'RAW', ?, ?, ?, CURDATE(), 'PARSE', ?, ?, 'PENDING', 0, NOW(6), NOW(6))
+                        VALUES (?, 'RAW', ?, ?, ?, CURDATE(), 'PARSE', ?, ?, 'PENDING', 0, ?, NOW(6))
                         ON DUPLICATE KEY UPDATE job_id = job_id
                         """, UUID.randomUUID().toString(), inputKey, sourceCode, rawId,
-                        decision.adapterContractVersion(), hash);
+                        decision.adapterContractVersion(), hash, clock.instant());
             }
             jdbc.update("""
                     INSERT INTO m3_adapter_evidence
                         (evidence_id, run_id, source_code, page_index, http_status, content_type,
                          byte_size, terminal_evidence, adapter_contract_version, captured_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(6))
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, UUID.randomUUID().toString(), runId, sourceCode, pageIndex,
                     page.httpStatus(), page.contentType(), page.byteSize(),
-                    page.terminalEvidence(), page.adapterContractVersion());
+                    page.terminalEvidence(), page.adapterContractVersion(), clock.instant());
 
             long expectedVersion = jdbc.queryForObject(
                     "SELECT cursor_version FROM m3_source_config WHERE source_code = ? FOR UPDATE",

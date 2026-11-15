@@ -37,9 +37,12 @@ public class SourceController {
     }
 
     @GetMapping("/sources/{code}/coverage")
-    public Result<List<CoverageFactDto>> coverage(
-            @PathVariable("code") String code, HttpServletRequest request) {
-        return api.respond(request, () -> read.coverageFacts(code));
+    public Result<CoverageFactPage> coverage(
+            @PathVariable("code") String code,
+            @RequestParam(name = "page", defaultValue = "0") int page,
+            @RequestParam(name = "size", defaultValue = "50") int size,
+            HttpServletRequest request) {
+        return api.respond(request, () -> read.coverageFacts(code, page, size));
     }
 
     @PostMapping("/sources/{code}/collect")

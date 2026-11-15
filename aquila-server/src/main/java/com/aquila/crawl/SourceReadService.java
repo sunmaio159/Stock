@@ -51,13 +51,19 @@ public class SourceReadService {
         return visible;
     }
 
-    public List<CoverageFactDto> coverageFacts(String sourceCode) {
+    public CoverageFactPage coverageFacts(String sourceCode, int page, int size) {
         policy.require(Permission.DISPLAY, sourceCode);
-        return jdbc.query("""
-                SELECT page_index, business_interval_start, business_interval_end,
+        int effectivePage = Math.max(0, page);
+        int effectiveSize = Math.max(1, size);
+        long total = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM m3_coverage_fact WHERE source_code = ?", Long.class, sourceCode);
+        List<CoverageFactDto> items = jdbc.query("""
+                SELECT run_id, page_index, business_interval_start, business_interval_end,
                        coverage_status, reason, evidence_reference, observed_at
-                FROM m3_coverage_fact WHERE source_code = ? ORDER BY page_index
+                FROM m3_coverage_fact WHERE source_code = ?
+                ORDER BY run_id, page_index LIMIT ? OFFSET ?
                 """, (resultSet, rowNumber) -> new CoverageFactDto(
+                        resultSet.getString("run_id"),
                         resultSet.getInt("page_index"),
                         resultSet.getTimestamp("business_interval_start") == null ? null
                                 : resultSet.getTimestamp("business_interval_start").toInstant(),
@@ -67,7 +73,8 @@ public class SourceReadService {
                         resultSet.getString("reason"),
                         resultSet.getString("evidence_reference"),
                         resultSet.getTimestamp("observed_at").toInstant()),
-                sourceCode);
+                sourceCode, effectiveSize, effectivePage * effectiveSize);
+        return new CoverageFactPage(total, effectivePage, effectiveSize, items);
     }
 
     /**

@@ -1,6 +1,6 @@
 package com.aquila.crawl;
 
-import java.time.Instant;
+import java.time.Clock;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -19,9 +19,15 @@ import org.springframework.stereotype.Service;
 public class CoverageService {
 
     private final JdbcTemplate jdbc;
+    private Clock clock = Clock.systemUTC();
 
     public CoverageService(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
+    }
+
+    /** Override the clock used for business timestamps; defaults to the system UTC clock. */
+    public void setClock(Clock clock) {
+        this.clock = clock;
     }
 
     public CoverageState commitPage(PageCommit commit) {
@@ -33,7 +39,7 @@ public class CoverageService {
                      business_interval_start, business_interval_end, cursor_before, cursor_after,
                      coverage_status, reason, adapter_contract_version, evidence_reference,
                      observed_at, page_index, page_terminal, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(6))
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON DUPLICATE KEY UPDATE
                     coverage_status = VALUES(coverage_status),
                     reason = VALUES(reason),
@@ -59,9 +65,10 @@ public class CoverageService {
                 reason,
                 commit.adapterContractVersion(),
                 commit.evidenceReference(),
-                Instant.now(),
+                clock.instant(),
                 commit.pageIndex(),
-                commit.terminal());
+                commit.terminal(),
+                clock.instant());
         return computeOverall(commit.runId());
     }
 
@@ -79,7 +86,7 @@ public class CoverageService {
         Tally tally = tally(pages);
         return new CoverageState(
                 runId, resolveOverall(tally, pages), tally.total(), tally.complete(), tally.partial(),
-                tally.unknown(), tally.unrecoverable(), Instant.now());
+                tally.unknown(), tally.unrecoverable(), clock.instant());
     }
 
     /**

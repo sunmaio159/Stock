@@ -886,7 +886,7 @@ which round 3 had correctly left to the owner — was issued by the owner (`63d4
 place) and executed in round 4. Still open as owner-governance decisions, independent of this
 task's correctness: I3–I8 and their Task 1 / Task 2 attribution, and the `m3_processing_job`
 versus `m4_processing_job` naming deviation. **Resolved 2026-11-15 by owner signature (see
-§Stage C Task 1 — 1.x fix): A1 — I3/I4/I5 fixed in the 1.x commit, I6/I7/I8 deferred to an
+§Stage C Task 1 — 1.x fix): A1 — I3/I4/I5 fixed in the 1.x commit, I6/I7/I8 implemented in the
 independent hardening pass; B1 — `m3_processing_job` is canonical (no rename, no V5 consumption);
 C1 — `aquila_migrate` Flyway `clean` is the default isolated-schema reset path.**
 
@@ -1010,25 +1010,35 @@ Falsifying tests (`CrawlResumptionIntegrationTest`, new): a failed-page resume m
 NULL columns must reject `NULL` inserts (I5 × 2). All six new tests were observed red against
 the pre-fix code and green after the fix.
 
-### I6 / I7 / I8 — deferred (owner decision 2026-11-15, A1)
+### I6 / I7 / I8 — implemented in independent hardening pass (owner decision 2026-11-15, A1)
 
-These do not touch the Task 2 semantic foundation, so they are explicitly parked in an
-independent hardening pass rather than folded into Task 1 or Task 2. Each is recorded with the
-test that should turn red once the fix lands, to prevent the debt from whitening:
+These do not touch the Task 2 semantic foundation, so they were explicitly parked in an
+independent hardening pass rather than folded into Task 1 or Task 2 (A1). The hardening pass
+landed in a separate commit after Task 1; each item's falsifying test now lives in
+`CrawlHardeningIntegrationTest` and was observed red against the pre-fix code and green after
+the fix:
 
-- **I6 — unbounded `/coverage` listing.** `SourceController` returns every run's facts with no
-  `page/size`, and the Vue view keys rows by `pageIndex`, so a repeated run can duplicate a key
-  and a stale run can masquerade as current. *Should turn red:* an IT that inserts two runs for
-  the same source and asserts the listing is paginated (default page size) and each row carries a
-  stable, unique run-scoped key (not `pageIndex` alone).
-- **I7 — unbounded crawl/recovery loops.** `runCollection` uses `while (true)` and `recover()`
-  scans without a bound. *Should turn red:* an IT whose fixture adapter yields a cycle / a
-  non-terminating cursor chain and asserts the run aborts after a configured maximum pages or
-  elapsed budget instead of looping forever.
-- **I8 — no injected `Clock`.** Five `Instant.now()` / `NOW(6)` writes are mixed with no
-  injected clock, so timezone regressions are invisible to tests. *Should turn red:* an IT that
-  runs two crawls with a clock shifted by a non-UTC offset and asserts the recorded
-  `observed_at` / `created_at` equal the injected instant (not server-local now).
+- **I6 — bounded `/coverage` listing + stable run-scoped key.** `SourceReadService.coverageFacts`
+  is now paginated (`ORDER BY run_id, page_index LIMIT ? OFFSET ?` with a `total` count) and
+  `SourceController.coverage` takes `page`/`size` (default 50). `CoverageFactDto` carries
+  `runId`; the Vue view keys rows by `runId + ':' + pageIndex` instead of `pageIndex` alone, so a
+  repeated run can no longer duplicate a key or let a stale run masquerade as current. The
+  `openapi.yaml` `CoverageFactListResult.data` is now a `CoverageFactPage` object.
+- **I7 — bounded crawl loop.** `runCollection`'s `while (true)` now aborts as `PARTIAL` once
+  `pageIndex >= maxPages` (default 1000, injectable via `setMaxPages`). A cycling / never-
+  terminating adapter therefore stops instead of looping forever; the aborted run's returned and
+  stored verdict is `PARTIAL` (its `lastState` is rewritten to `PARTIAL` so the returned verdict
+  matches the stored one).
+- **I8 — injected `Clock`.** `CrawlApplicationService`, `CoverageService`, and
+  `ProcessingJobWorker` accept an injectable `Clock` (default `Clock.systemUTC()`). All business
+  timestamps (`created_at` of task/raw/job, `observed_at` / `captured_at`) are bound from
+  `clock.instant()` instead of mixed `Instant.now()` / `NOW(6)`, so a non-UTC JVM/DB offset is
+  now visible to tests and the recorded instant equals the injected one.
+
+*Historical note (pre-hardening "should turn red" characterisations):* I6 an IT inserting two
+runs asserting pagination + a stable unique run-scoped key; I7 an IT whose fixture adapter cycles
+and asserts the run aborts after a configured bound; I8 an IT shifting the clock by a non-UTC
+offset and asserting `observed_at` / `created_at` equal the injected instant.
 
 ### C1 — reset path and discipline (owner decision 2026-11-15)
 

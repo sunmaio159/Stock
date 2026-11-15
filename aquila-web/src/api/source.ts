@@ -9,6 +9,7 @@ export interface SourceConfigDto {
 }
 
 export interface CoverageFactDto {
+  runId: string;
   pageIndex: number;
   intervalStart: string | null;
   intervalEnd: string | null;
@@ -16,6 +17,13 @@ export interface CoverageFactDto {
   reason: string | null;
   evidenceReference: string | null;
   observedAt: string;
+}
+
+export interface CoverageFactPageDto {
+  total: number;
+  page: number;
+  size: number;
+  items: CoverageFactDto[];
 }
 
 export interface CoverageState {
@@ -38,9 +46,9 @@ export function listSources() {
   return request<SourceConfigDto[]>('/api/sources');
 }
 
-export function listCoverage(sourceCode: string) {
-  return request<CoverageFactDto[]>(
-    `/api/sources/${encodeURIComponent(sourceCode)}/coverage`,
+export function listCoverage(sourceCode: string, page = 0, size = 50) {
+  return request<CoverageFactPageDto>(
+    `/api/sources/${encodeURIComponent(sourceCode)}/coverage?page=${page}&size=${size}`,
   );
 }
 
