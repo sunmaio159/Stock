@@ -770,8 +770,10 @@ found, and I confirmed, that **F-2 was not actually closed**:
   `Tests run: 4, Failures: 2` with `Expecting actual: "COMPLETE" not to be equal to:
   "COMPLETE"`.
   Closing it needs the terminal fact persisted, which is a schema change, so the migration
-  path is an owner decision (edit `V3` in place again, which changes its checksum and
-  requires a fresh empty schema and the admin credential, or add `V4`). Making
+  path was an owner decision. **Issued at the end of round 3: edit `V3` in place again** (the
+  same route as the round-2 six grant columns), which changes its checksum and therefore
+  requires a fresh empty schema and the admin credential — the owner will inject that
+  credential into the command session at round-4 start, not persisted or committed. Making
   non-terminal pages not `COMPLETE` at the page level instead would contradict §8.2.1, which
   deliberately separates the page verdict from the run verdict, and is recorded as rejected
   rather than silently chosen.
