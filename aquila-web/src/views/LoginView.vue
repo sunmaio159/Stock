@@ -72,8 +72,8 @@ async function submit(): Promise<void> {
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : '';
     error.value = message.includes('Too many failed')
-      ? 'Too many attempts. Try again after earlier failures age out.'
-      : 'Authentication failed. Check the credentials and try again.';
+      ? '尝试次数过多，请等待早期失败记录过期后再试。'
+      : '认证失败，请检查账号、密码和验证码后重试。';
   } finally {
     password.value = '';
     loading.value = false;
@@ -88,41 +88,42 @@ function showRecoveryCodes(): void {
 
 <template>
   <main class="auth-card">
-    <h1>Aquila Stock</h1>
+    <h1>Aquila 投研工作台</h1>
     <p v-if="mode === 'codes'" role="status">
-      Save these recovery codes now. They are shown once and cannot be viewed again.
+      请立即保存以下恢复码：仅显示一次，之后无法再次查看。
     </p>
     <template v-if="mode === 'codes'">
       <ul class="recovery-codes">
         <li v-for="recoveryCode in recoveryCodes" :key="recoveryCode">{{ recoveryCode }}</li>
       </ul>
-      <button type="button" @click="showRecoveryCodes">I saved these codes</button>
+      <button type="button" @click="showRecoveryCodes">我已保存恢复码</button>
     </template>
     <form v-else @submit.prevent="submit">
-      <h2 v-if="mode === 'login'">Sign in</h2>
-      <h2 v-else-if="mode === 'recovery'">Recover authenticator access</h2>
-      <h2 v-else>Complete first-time setup</h2>
+      <h2 v-if="mode === 'login'">登录</h2>
+      <h2 v-else-if="mode === 'recovery'">使用恢复码重新登录</h2>
+      <h2 v-else>首次初始化管理员</h2>
 
       <template v-if="mode !== 'bootstrap'">
         <label>
-          Administrator
-          <input v-model="username" autocomplete="username" required>
+          管理员账号
+          <input v-model="username" autocomplete="username" placeholder="请输入管理员账号" required>
         </label>
         <label>
-          Password
-          <input v-model="password" type="password" autocomplete="current-password" required>
+          密码
+          <input v-model="password" type="password" autocomplete="current-password" placeholder="请输入密码" required>
         </label>
       </template>
       <label v-if="mode === 'bootstrap'">
-        One-time bootstrap token
-        <input v-model="bootstrapToken" autocomplete="off" required>
+        一次性初始化令牌
+        <input v-model="bootstrapToken" autocomplete="off" placeholder="粘贴本地生成的一次性令牌" required>
       </label>
       <label v-if="mode !== 'recovery'">
-        {{ mode === 'bootstrap' ? 'Authenticator code' : 'Authenticator code' }}
+        动态验证码（6 位）
         <input
           v-model="code"
           inputmode="numeric"
           autocomplete="one-time-code"
+          placeholder="请输入 6 位动态验证码"
           pattern="[0-9]{6}"
           minlength="6"
           maxlength="6"
@@ -130,29 +131,29 @@ function showRecoveryCodes(): void {
         >
       </label>
       <label v-else>
-        One-time recovery code
-        <input v-model="code" autocomplete="off" required>
+        一次性恢复码
+        <input v-model="code" autocomplete="off" placeholder="请输入一次性恢复码" required>
       </label>
       <p v-if="error" role="alert">{{ error }}</p>
-      <p v-if="loading" role="status">Checking credentials…</p>
+      <p v-if="loading" role="status">正在验证…</p>
       <button type="submit" :disabled="loading">
-        {{ loading ? 'Please wait…' : mode === 'bootstrap' ? 'Confirm setup' : 'Continue' }}
+        {{ loading ? '请稍候…' : mode === 'bootstrap' ? '确认初始化' : '登录' }}
       </button>
     </form>
 
-    <nav v-if="mode !== 'codes'" aria-label="Authentication options">
+    <nav v-if="mode !== 'codes'" aria-label="认证方式">
       <button v-if="mode === 'login'" type="button" @click="mode = 'recovery'; code = ''; error = ''">
-        Use a recovery code
+        使用恢复码
       </button>
       <button v-if="mode === 'login'" type="button" @click="mode = 'bootstrap'; code = ''; error = ''">
-        Set up the first administrator
+        初始化首个管理员
       </button>
       <button v-if="mode !== 'login'" type="button" @click="mode = 'login'; code = ''; error = ''">
-        Back to sign in
+        返回登录
       </button>
     </nav>
     <p class="transport-warning">
-      Local HTTP traffic is not encrypted. Use only on a trusted network until HTTPS is configured.
+      本地 HTTP 通信未加密，请仅在可信网络中使用，直至配置 HTTPS。
     </p>
   </main>
 </template>
