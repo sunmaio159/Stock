@@ -324,7 +324,8 @@ class GovernanceConstraintIntegrationTest {
      *
      * <p>Review 2026-11-16 Minor-7: the two callers are refused by the entry gate BEFORE any
      * transaction opens, so this asserts the gate's atomicity — it does not cover the
-     * in-transaction capability re-check (lines 63-64 of RevisionService). The job count is
+     * in-transaction capability re-check (the policy.require calls after upsertDocument in
+     * RevisionService.receive()). The job count is
      * now unfiltered: this fixture starts at zero jobs, so any row at all is a write leak.
      */
     private void assertNoGovernanceWrites() {

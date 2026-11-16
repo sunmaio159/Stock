@@ -105,6 +105,15 @@ class SentimentModelTest {
                 .hasMessageContaining("half-life");
         assertThatThrownBy(() -> new DecayPolicy(null, null, 12))
                 .isInstanceOf(IllegalArgumentException.class);
+        // Review round-4 M-1: the explicit 0..18 scale guard is new code and must fail red
+        // at both ends if someone removes it.
+        assertThatThrownBy(() -> new DecayPolicy(DecayPolicy.DecayType.NONE, null, -1))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("weightScale");
+        assertThatThrownBy(() -> new DecayPolicy(
+                DecayPolicy.DecayType.EXPONENTIAL_HALF_LIFE, 900L, 19))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("weightScale");
     }
 
     @Test

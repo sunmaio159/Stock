@@ -34,7 +34,7 @@
 **Files:**
 - Create: `aquila-server/src/main/java/com/aquila/maintenance/RetentionService.java`
 - Create: `aquila-server/src/main/java/com/aquila/maintenance/ExportService.java`
-- Create: `aquila-server/src/main/resources/db/migration/V8__retention_maintenance.sql`
+- Create: `aquila-server/src/main/resources/db/migration/V10__retention_maintenance.sql` (renumbered 2026-11-16: V7 is the applied Stage D review-fix `V7__sentiment_window_check_hardening.sql`, V8 is reserved for Stage D Task 2 `V8__analysis_publication.sql`, V9 is Stage E; physical numbering follows the applied Flyway sequence, decision D3 pattern)
 - Create: `aquila-server/src/test/java/com/aquila/maintenance/RetentionRaceIntegrationTest.java`
 - Create: `aquila-server/src/test/java/com/aquila/maintenance/ExportSafetyTest.java`
 - Modify: `aquila-server/src/main/java/com/aquila/governance/LifecycleGuard.java`

@@ -3,6 +3,7 @@ package com.aquila.crawl;
 import com.aquila.common.ApiException;
 import com.aquila.sourcepolicy.Permission;
 import com.aquila.sourcepolicy.SourcePolicy;
+import com.aquila.sourcepolicy.SourceValidityWindow;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -39,9 +40,11 @@ public class SourceReadService {
                         resultSet.getString("source_code"),
                         resultSet.getString("source_name"),
                         resultSet.getString("permission_status"),
-                        resultSet.getTimestamp("valid_from").toInstant(),
-                        resultSet.getTimestamp("valid_to") == null
-                                ? null : resultSet.getTimestamp("valid_to").toInstant()));
+                        // Review round-4 I-1: the same UTC wall-clock DATETIME contract as
+                        // SourcePolicy/LifecycleGuard. getTimestamp().toInstant() would apply
+                        // the JVM zone (Asia/Shanghai here) and show an 8-hour-shifted window.
+                        SourceValidityWindow.readUtc(resultSet, "valid_from"),
+                        SourceValidityWindow.readUtc(resultSet, "valid_to")));
         List<SourceConfigDto> visible = new ArrayList<>();
         for (SourceConfigDto row : rows) {
             if (policy.permits(Permission.DISPLAY, row.sourceCode())) {

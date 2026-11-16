@@ -40,6 +40,14 @@ public class RevisionService {
      */
     private volatile Runnable afterDocumentLockHook;
 
+    /**
+     * Test seam (review round-4 I-2): invoked at the very start of the receive transaction,
+     * before the doc upsert takes its row lock. A test can open a second transaction here
+     * while the first still holds the lock, with NO ReadView fixed yet; this is the state in
+     * which a "plain read before lock" regression becomes observable. Production never sets it.
+     */
+    private volatile Runnable beforeDocumentLockHook;
+
     public RevisionService(
             JdbcTemplate jdbc, TransactionTemplate transactions, SourcePolicy policy) {
         this.jdbc = jdbc;
@@ -49,6 +57,10 @@ public class RevisionService {
 
     void setAfterDocumentLockHook(Runnable hook) {
         this.afterDocumentLockHook = hook;
+    }
+
+    void setBeforeDocumentLockHook(Runnable hook) {
+        this.beforeDocumentLockHook = hook;
     }
 
     public DocumentRevision receive(ObservedDocument observed) {
@@ -190,6 +202,11 @@ public class RevisionService {
     }
 
     private String upsertDocument(ObservedDocument observed) {
+        // Still inside the transaction, but before any statement has fixed a ReadView.
+        Runnable beforeLock = beforeDocumentLockHook;
+        if (beforeLock != null) {
+            beforeLock.run();
+        }
         jdbc.update("""
                 INSERT INTO m4_normalized_doc
                     (doc_id, source_code, outer_id, current_doc_revision_id,

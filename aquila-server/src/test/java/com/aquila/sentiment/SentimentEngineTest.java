@@ -232,18 +232,19 @@ class SentimentEngineTest {
     }
 
     /**
-     * Review 2026-11-16 M-3: the evidence list is bounded by the versioned
-     * maxEvidenceHits (20 in the fixture) while the score keeps accumulating over the
-     * whole text. Without the cap, hitWords would list all 25 matches.
+     * Review 2026-11-16 M-3 / round-4 M-2: the evidence list is bounded by the versioned
+     * maxEvidenceHits (20 in the fixture) while the score keeps accumulating over the whole
+     * text. A one-point word score keeps 25 hits below the +/-100 clamp, so an implementation
+     * that also stopped scoring at the cap would produce 20.00 and fail this assertion.
      */
     @Test
     void evidenceCollectionStopsAtTheVersionedCap() {
         String manyHits = "gain ".repeat(25);
         SentimentResult result = engine.evaluate(
                 input(manyHits, "SH600000"),
-                dictionary("dict-1", "10", "-10"), algorithm());
+                dictionary("dict-1", "1", "-1"), algorithm());
 
         assertThat(result.hitWords()).hasSize(20);
-        assertThat(result.score()).isEqualByComparingTo("100.00");
+        assertThat(result.score()).isEqualByComparingTo("25.00");
     }
 }

@@ -36,7 +36,7 @@
 - Create: `aquila-server/src/main/java/com/aquila/alert/AlertEventService.java`
 - Create: `aquila-server/src/main/java/com/aquila/alert/AlertController.java`
 - Create: `aquila-server/src/main/java/com/aquila/alert/AlertDeliveryWorker.java`
-- Create: `aquila-server/src/main/resources/db/migration/V7__alerts_and_audit.sql`
+- Create: `aquila-server/src/main/resources/db/migration/V9__alerts_and_audit.sql` (renumbered 2026-11-16: V7 is the applied Stage D review-fix `V7__sentiment_window_check_hardening.sql`, V8 is reserved for Stage D Task 2 `V8__analysis_publication.sql`; physical numbering follows the applied Flyway sequence, decision D3 pattern)
 - Create: `aquila-server/src/test/java/com/aquila/alert/AlertThresholdTest.java`
 - Create: `aquila-server/src/test/java/com/aquila/alert/AlertCoverageIntegrationTest.java`
 - Create: `aquila-server/src/test/java/com/aquila/alert/AlertCooldownConcurrencyTest.java`

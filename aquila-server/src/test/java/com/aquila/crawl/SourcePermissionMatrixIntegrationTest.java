@@ -9,6 +9,8 @@ import com.aquila.masterdata.MasterDataFixture;
 import com.aquila.sourcepolicy.Permission;
 import com.aquila.sourcepolicy.SourcePolicy;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -112,6 +114,29 @@ class SourcePermissionMatrixIntegrationTest {
                 .toList();
 
         assertThat(visible).contains(CrawlFixture.SOURCE_CODE).doesNotContain("HIDDEN");
+    }
+
+    /**
+     * Review round-4 I-1: the display read point must interpret the UTC wall-clock DATETIME
+     * columns exactly as SourcePolicy/LifecycleGuard do. Under this host's Asia/Shanghai JVM,
+     * {@code getTimestamp().toInstant()} returns 02:00Z for a row stored as 10:00Z, so the
+     * operations view would disagree with the actual license window by eight hours.
+     */
+    @Test
+    void sourceListReadsValidityWindowAsUtcWallClock() {
+        Instant from = Instant.parse("2026-11-16T10:00:00Z");
+        String sourceCode = "UTC-WALL-CLOCK";
+        CrawlFixture.insertSourceWithGrants(jdbc, sourceCode, Permission.DISPLAY);
+        jdbc.update("""
+                UPDATE m3_source_config SET valid_from = ? WHERE source_code = ?
+                """, LocalDateTime.ofInstant(from, ZoneOffset.UTC), sourceCode);
+
+        SourceConfigDto row = read.displayableSources().stream()
+                .filter(dto -> sourceCode.equals(dto.sourceCode()))
+                .findFirst().orElseThrow();
+
+        assertThat(row.validFrom()).isEqualTo(from);
+        assertThat(row.validTo()).isNull();
     }
 
     @Test

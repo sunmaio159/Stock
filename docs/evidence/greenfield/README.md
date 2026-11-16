@@ -1470,3 +1470,37 @@ no MySQL ITs) and every codeable finding fixed in one pass.
   (deferred), dictionary snapshot publication service, window evidence-state state machine
   (Task 2), the four owner/parameter/load-dependent Stage C items, and a fresh independent
   review of this pass.
+
+## Round-4 independent review and closure (`92a9611..b428a97`, 2026-11-16)
+
+Owner instruction: "对 b428a97 再跑一轮复审形成闭环". A new read-only reviewer re-examined
+the previous fix batch against full source context (no Critical, 3 Important + 3 Minor); every
+finding was then fixed and falsified in this pass. The full report is
+`.superpowers/sdd/2026-11-09-zero-based-stage-d/review-92a9611..b428a97-round4.md` (git-ignored).
+
+- **I-1:** the UTC wall-clock DATETIME contract missed the operations display read point —
+  `SourceReadService` still used `getTimestamp().toInstant()` while the gate and commit barrier
+  used `SourceValidityWindow.readUtc`. Fixed with a new IT asserting `10:00:00Z` instead of the
+  Asia/Shanghai-shifted `02:00:00Z`; removing the fix makes that IT red with exactly those values.
+- **I-2:** the "deterministic interleaving" hook only proved T2 was scheduled, not that it held
+  a transaction at the doc row lock. Added a second, pre-upsert test seam: T2 opens its
+  transaction while T1 is parked with the row locked (proved by a `FOR UPDATE NOWAIT` probe on a
+  separate connection) and before any ReadView is fixed. Inserting a plain read before that seam
+  now makes the IT red with two different `docRevisionId`s, so stale-ReadView regressions are
+  genuinely covered.
+- **I-3:** the V8 renumbering had not propagated to Stage E/F plans or the schema ownership map
+  (V7 was still claimed by Stage E, V8 by both Task 2 and Stage F). Stage E is now V9, Stage F is
+  V10, and `schema-v1.md` records `V5–V7 D / V8 D Task 2 / V9 E / V10 F`. No applied migration
+  was edited.
+- **M-1/M-2/M-3:** added both `weightScale` boundary assertions; pinned "evidence capped but
+  score still accumulates" with a 1-point fixture asserting `25.00` (a score-stopping regression
+  yields `21.00`); replaced a stale hardcoded line-number comment with a method anchor.
+- **Falsification:** 4 probe groups all red-then-restored with exact attribution (UTC reader
+  → 8-hour drift; pre-lock plain read → two revisions; scale guard removed → no throwable;
+  score early stop → 21.00). Source files byte-restored, no `PROBE:` residue, V1–V7 untouched.
+- **Verification:** focused **45/45** against real MySQL 8.4; full backend `-Pmysql-it` excluding
+  the by-design empty-schema gate `FlywayMySqlIntegrationTest` **254/254**; frontend typecheck,
+  OpenAPI lint, vitest 5/5 and build all green.
+- **Still open (unchanged):** the eight PO parameters, deferred `DictionaryView.vue`/OpenAPI,
+  dictionary snapshot publication, Task 2 window evidence-state state machine, and the four
+  owner/parameter/load-dependent Stage C items.

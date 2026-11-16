@@ -6,6 +6,9 @@ import com.aquila.auth.AuthMySqlCondition;
 import com.aquila.crawl.JobLease;
 import com.aquila.crawl.ProcessingJobWorker;
 import com.aquila.masterdata.MasterDataFixture;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -13,6 +16,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -45,11 +50,13 @@ class RevisionOrderingIntegrationTest {
     void reset() {
         GovernanceFixture.reset(jdbc);
         revisions.setAfterDocumentLockHook(null);
+        revisions.setBeforeDocumentLockHook(null);
     }
 
     @AfterEach
     void cleanup() {
         revisions.setAfterDocumentLockHook(null);
+        revisions.setBeforeDocumentLockHook(null);
         GovernanceFixture.clear(jdbc);
     }
 
@@ -150,13 +157,12 @@ class RevisionOrderingIntegrationTest {
      * silently allocates a second order. This test is intentionally run against real MySQL
      * with two threads (each gets its own connection/transaction).
      *
-     * <p>Stage C round-3 M-3: a single CountDownLatch could let the first worker finish
-     * before the second starts, silently degrading to a sequential replay.
-     * <p>Stage C round-4 Minor-4: even a CyclicBarrier only proves both threads are ready —
-     * one can still acquire the lock and commit before the other issues any statement. The
-     * {@code afterDocumentLockHook} now holds T1 INSIDE the transaction with the doc row
-     * locked until T2 has entered receive(), so the overlap is deterministic: removing the
-     * "lock before ReadView" ordering makes T2 read a stale snapshot and allocate order 2.
+     * <p>Review round-4 I-2: the old hook only proved T2 was scheduled before T1 was released;
+     * it never proved T2 reached the lock while T1 held it. T2 now opens its transaction at
+     * {@code beforeDocumentLockHook} while T1 is parked with the doc row locked (verified by a
+     * NOWAIT probe on a separate physical connection) and stays there with NO ReadView fixed
+     * until T1 commits. Any regression that takes a plain read before the lock fixes a stale
+     * ReadView at this gate and makes the test red.
      */
     @Test
     void concurrentLocalOrderRedeliveryCreatesOneRevision() throws Exception {
@@ -165,37 +171,61 @@ class RevisionOrderingIntegrationTest {
                 "POST-6", null, "hash-concurrent", raw, GovernanceFixture.SECURITY_A);
 
         CountDownLatch lockHeld = new CountDownLatch(1);
-        CountDownLatch secondEntered = new CountDownLatch(1);
+        CountDownLatch secondAtGate = new CountDownLatch(1);
         CountDownLatch releaseFirst = new CountDownLatch(1);
-        java.util.concurrent.atomic.AtomicBoolean armed = new java.util.concurrent.atomic.AtomicBoolean(true);
+        CountDownLatch firstCommitted = new CountDownLatch(1);
+        CountDownLatch releaseSecond = new CountDownLatch(1);
+        AtomicBoolean armed = new AtomicBoolean(true);
+        AtomicReference<Throwable> lockProbe = new AtomicReference<>();
+
         revisions.setAfterDocumentLockHook(() -> {
-            // Fire only for T1: T2 reaches this point after T1 commits and must not wait.
+            // Fire only for T1; T2 passes this point after T1 has committed.
             if (!armed.compareAndSet(true, false)) {
                 return;
             }
             lockHeld.countDown();
-            try {
-                if (!secondEntered.await(20, TimeUnit.SECONDS)
-                        || !releaseFirst.await(20, TimeUnit.SECONDS)) {
-                    throw new IllegalStateException("Concurrent redelivery did not overlap");
-                }
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException(interrupted);
-            }
+            await(secondAtGate);
         });
 
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
-            Future<DocumentRevision> first = pool.submit(() -> revisions.receive(document));
-            assertThat(lockHeld.await(20, TimeUnit.SECONDS)).isTrue();
-            // T2 enters receive() while T1 still holds the row lock inside its transaction.
-            Future<DocumentRevision> second = pool.submit(() -> {
-                secondEntered.countDown();
-                return revisions.receive(document);
+            Future<DocumentRevision> first = pool.submit(() -> {
+                try {
+                    return revisions.receive(document);
+                } finally {
+                    firstCommitted.countDown();
+                }
             });
-            assertThat(secondEntered.await(20, TimeUnit.SECONDS)).isTrue();
+            assertThat(lockHeld.await(20, TimeUnit.SECONDS)).isTrue();
+
+            // T1 is parked with the doc row locked. T2 starts its transaction here and stops
+            // BEFORE its first statement, so no ReadView has been fixed yet.
+            revisions.setBeforeDocumentLockHook(() -> {
+                try (Connection probe = jdbc.getDataSource().getConnection();
+                     PreparedStatement statement = probe.prepareStatement("""
+                             SELECT doc_id FROM m4_normalized_doc
+                             WHERE source_code = ? AND outer_id = ? FOR UPDATE NOWAIT
+                             """)) {
+                    statement.setString(1, GovernanceFixture.SOURCE_CODE);
+                    statement.setString(2, "POST-6");
+                    statement.executeQuery();
+                    lockProbe.set(new AssertionError(
+                            "T1 did not hold the doc row lock at the T2 gate"));
+                } catch (SQLException expected) {
+                    // ER_LOCK_NOWAIT / ER_LOCK_WAIT_TIMEOUT is proof of a real overlap.
+                    if (expected.getErrorCode() != 3572 && expected.getErrorCode() != 1205) {
+                        lockProbe.set(expected);
+                    }
+                }
+                secondAtGate.countDown();
+                await(releaseSecond);
+            });
+            Future<DocumentRevision> second = pool.submit(() -> revisions.receive(document));
+            assertThat(secondAtGate.await(20, TimeUnit.SECONDS)).isTrue();
+
             releaseFirst.countDown();
+            assertThat(firstCommitted.await(20, TimeUnit.SECONDS)).isTrue();
+            releaseSecond.countDown();
 
             List<DocumentRevision> results = new ArrayList<>();
             results.add(first.get(30, TimeUnit.SECONDS));
@@ -208,6 +238,7 @@ class RevisionOrderingIntegrationTest {
         } finally {
             pool.shutdownNow();
         }
+        assertThat(lockProbe.get()).as("lock probe: %s", lockProbe.get()).isNull();
 
         assertThat(count("SELECT COUNT(*) FROM m4_normalized_doc")).isEqualTo(1);
         assertThat(count("SELECT COUNT(*) FROM m4_doc_revision")).isEqualTo(1);
@@ -263,5 +294,16 @@ class RevisionOrderingIntegrationTest {
     private int count(String sql) {
         Integer value = jdbc.queryForObject(sql, Integer.class);
         return value == null ? 0 : value;
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            if (!latch.await(20, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("Concurrent redelivery latch timed out");
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(interrupted);
+        }
     }
 }
