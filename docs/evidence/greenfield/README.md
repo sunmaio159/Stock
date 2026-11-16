@@ -1504,3 +1504,41 @@ finding was then fixed and falsified in this pass. The full report is
 - **Still open (unchanged):** the eight PO parameters, deferred `DictionaryView.vue`/OpenAPI,
   dictionary snapshot publication, Task 2 window evidence-state state machine, and the four
   owner/parameter/load-dependent Stage C items.
+
+## PO direction decisions #4 and #6 — mechanism-layer extension (2026-11-16)
+
+Owner confirmed two directions for the Step 1 parameter freeze: the contrast/concessive rule is
+wanted (#4), and quality/interaction/source differentiated aggregation weights are wanted (#6).
+Per freeze-sheet flow C.2, only the mechanism was extended; **no business value was invented** —
+markers, discounts, coefficients and source tiers remain explicit PO-supplied versioned inputs,
+and the eight parameters themselves are still unsigned. Freeze sheet:
+`.superpowers/sdd/2026-11-09-zero-based-stage-d/po-parameter-freeze-sheet.md` (git-ignored).
+
+- **#4 contrast:** `DictionarySnapshot.contrastMarkers` + `AlgorithmSnapshot.contrast`
+  (`ContrastPolicy(strategy, preContrastWeight)`, null = explicit off). The single
+  `FIRST_MARKER_SPLIT` strategy discounts score terms before the first marker by
+  `preContrastWeight ∈ [0,1]`, keeps full weight after, and resets pending negation/degree at
+  the split. Old 5/8-arg constructors are preserved, so existing snapshots are byte-stable.
+- **#6 differentiated weights:** `SampleWeighting.QUALITY_INTERACTION_SOURCE` plus
+  `SampleSignals(quality, interactionCount, sourceTier)` on samples and
+  `WeightPolicy(qualityFactor, interactionFactor, interactionNorm, sourceWeights)` on the
+  policy. Multiplier `(1 + qF*quality + iF*(interactions/norm)) * sourceWeight[tier]`, rounded
+  once at the decay `weightScale` and composed multiplicatively with exponential decay. Unknown
+  tier / missing signals / missing weight policy fail closed; UNIFORM and NONE remain explicit.
+- **Falsification:** 4 probe groups all red-then-restored with exact attribution — discount
+  removed → `0.00` vs `-20.00`; cross-split state reset removed → `60.00` vs `80.00`/`-20.00`;
+  differentiated weight removed → `50.00` vs `71.48`; unknown-tier guard removed → no throwable.
+  Source files byte-restored, no `PROBE:` residue.
+- **Flaky test eliminated (pre-existing, unrelated to the mechanism change):** two validity
+  tests derived `valid_to` from the DB's `UTC_TIMESTAMP(6) - 1s` but the guard compares against
+  the JVM clock on a different host; cross-host drift > 1s made "expired" read as "valid".
+  Both hooks now write a deterministic fully-past UTC window with the same semantics. HEAD
+  (before this change) reproduced the same 2 failures on a full run; after the fix two
+  consecutive full runs were green.
+- **Verification:** focused 48/48; full backend `-Pmysql-it` excluding the by-design
+  empty-schema gate `FlywayMySqlIntegrationTest` **268/268**, twice consecutive; frontend
+  typecheck, OpenAPI lint, vitest 5/5 and build all green.
+- **Still open:** all eight Step 1 PO parameter values (contrast markers/discount and weight
+  coefficients/tiers now have mechanisms ready to receive them), deferred
+  `DictionaryView.vue`/OpenAPI, dictionary snapshot publication service, Task 2 window
+  evidence-state state machine, and the four owner/parameter/load-dependent Stage C items.

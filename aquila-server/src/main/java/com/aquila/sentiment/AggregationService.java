@@ -101,17 +101,21 @@ public final class AggregationService {
 
     /**
      * The policy's explicit weighting and decay. UNIFORM weighting is 1.0 (an explicit
-     * versioned choice); exponential decay scales the weight by
-     * {@code 0.5^(age / halfLifeSeconds)} relative to the window end, where age is
-     * clamped at zero so a sample at the window end keeps its full weight.
+     * versioned choice); QUALITY_INTERACTION_SOURCE turns each sample's published
+     * quality/interaction/source attributes into a multiplier from the policy's explicit
+     * coefficients (PO decision #6). Exponential decay then scales that base weight by
+     * {@code 0.5^(age / halfLifeSeconds)} relative to the window end, age clamped at zero
+     * so a sample at the window end keeps its full weight.
+     *
+     * <p>All coefficient/signal arithmetic uses the policy's explicit {@code weightScale},
+     * and every non-uniform input fails closed: a missing signals object, a missing
+     * weight policy, or an unknown source tier is refused rather than silently given
+     * weight 1.
      */
     private BigDecimal weightOf(AggregationPolicy policy, WindowKey key, AggregationSample sample) {
-        if (policy.sampleWeighting() != SampleWeighting.UNIFORM) {
-            throw new IllegalArgumentException(
-                    "Unsupported weighting: " + policy.sampleWeighting());
-        }
+        BigDecimal base = baseWeight(policy, sample);
         if (policy.decay().type() == DecayPolicy.DecayType.NONE) {
-            return BigDecimal.ONE;
+            return base;
         }
         long ageSeconds = Math.max(0,
                 Duration.between(sample.publishedAt(), key.windowEnd()).toSeconds());
@@ -119,7 +123,37 @@ public final class AggregationService {
         // StrictMath.pow is bit-reproducible across JVMs (Math.pow may differ by 1 ulp),
         // and the policy's explicit weightScale fixes the decimal precision instead of a
         // hidden MathContext — same versioned inputs give the same window score everywhere.
-        return BigDecimal.valueOf(StrictMath.pow(0.5, exponent))
+        BigDecimal decay = BigDecimal.valueOf(StrictMath.pow(0.5, exponent))
                 .setScale(policy.decay().weightScale(), RoundingMode.HALF_UP);
+        return base.multiply(decay).setScale(policy.decay().weightScale(), RoundingMode.HALF_UP);
+    }
+
+    /** The versioned sample-weighting component, before any time decay. */
+    private BigDecimal baseWeight(AggregationPolicy policy, AggregationSample sample) {
+        if (policy.sampleWeighting() == SampleWeighting.UNIFORM) {
+            return BigDecimal.ONE;
+        }
+        if (policy.sampleWeighting() != SampleWeighting.QUALITY_INTERACTION_SOURCE) {
+            throw new IllegalArgumentException(
+                    "Unsupported weighting: " + policy.sampleWeighting());
+        }
+        WeightPolicy weights = policy.weightPolicy();
+        SampleSignals signals = sample.signals();
+        if (weights == null || signals == null) {
+            throw new IllegalArgumentException(
+                    "QUALITY_INTERACTION_SOURCE requires an explicit weight policy and sample signals");
+        }
+        BigDecimal sourceWeight = weights.sourceWeights().get(signals.sourceTier());
+        if (sourceWeight == null) {
+            throw new IllegalArgumentException("Unknown source tier: " + signals.sourceTier());
+        }
+        int scale = policy.decay().weightScale();
+        BigDecimal interactionRatio = BigDecimal.valueOf(signals.interactionCount())
+                .divide(BigDecimal.valueOf(weights.interactionNorm()), scale, RoundingMode.HALF_UP);
+        return BigDecimal.ONE
+                .add(weights.qualityFactor().multiply(signals.quality()))
+                .add(weights.interactionFactor().multiply(interactionRatio))
+                .multiply(sourceWeight)
+                .setScale(scale, RoundingMode.HALF_UP);
     }
 }

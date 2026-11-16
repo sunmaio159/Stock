@@ -247,4 +247,91 @@ class SentimentEngineTest {
         assertThat(result.hitWords()).hasSize(20);
         assertThat(result.score()).isEqualByComparingTo("25.00");
     }
+
+    // ---- PO decision #4: contrast (concessive) rule -------------------------------
+
+    private static AlgorithmSnapshot contrastAlgorithm(String preContrastWeight) {
+        return new AlgorithmSnapshot(
+                "algo-contrast", MIN_CONFIDENCE, 2, 20, true,
+                BigDecimal.ONE, BigDecimal.ONE, ConfidenceStrategy.HITS_OVER_FULL_HITS,
+                new ContrastPolicy(ContrastPolicy.ContrastStrategy.FIRST_MARKER_SPLIT,
+                        new BigDecimal(preContrastWeight)));
+    }
+
+    private static DictionarySnapshot contrastDictionary(
+            Map<String, BigDecimal> scores, Set<String> negations,
+            Map<String, BigDecimal> degrees, Set<String> markers) {
+        return new DictionarySnapshot("dict-contrast", scores, negations, degrees, false, markers);
+    }
+
+    /**
+     * The first marker splits the section: text before it is discounted, text after it
+     * keeps full weight. A no-op/global-discount implementation fails this exact value.
+     */
+    @Test
+    void contrastDiscountsOnlyTextBeforeTheFirstMarker() {
+        Map<String, BigDecimal> scores = new LinkedHashMap<>();
+        scores.put("gain", new BigDecimal("40"));
+        scores.put("decline", new BigDecimal("-40"));
+
+        SentimentResult result = engine.evaluate(
+                input("gain but decline", "SH600000"),
+                contrastDictionary(scores, Set.of(), Map.of(), Set.of("but")),
+                contrastAlgorithm("0.5"));
+
+        // +40*0.5 before the marker, -40*1 after => -20.00
+        assertThat(result.score()).isEqualByComparingTo("-20.00");
+        assertThat(result.hitWords()).containsExactly("gain", "decline");
+    }
+
+    /** Degree state pending before a marker is reset, not carried into the concessive clause. */
+    @Test
+    void contrastDoesNotCarryDegreeStateAcrossTheSplit() {
+        Map<String, BigDecimal> scores = new LinkedHashMap<>();
+        scores.put("gain", new BigDecimal("40"));
+
+        SentimentResult result = engine.evaluate(
+                input("gain sharply but gain", "SH600000"),
+                contrastDictionary(scores, Set.of(), Map.of("sharply", new BigDecimal("1.5")),
+                        Set.of("but")),
+                contrastAlgorithm("0.5"));
+
+        // first gain +40*0.5=+20; "sharply" pending is dropped at the marker; second +40
+        assertThat(result.score()).isEqualByComparingTo("60.00");
+    }
+
+    /** Negation pending before a marker is reset, not carried across the split. */
+    @Test
+    void contrastDoesNotCarryNegationAcrossTheSplit() {
+        Map<String, BigDecimal> scores = new LinkedHashMap<>();
+        scores.put("gain", new BigDecimal("40"));
+
+        SentimentResult result = engine.evaluate(
+                input("gain not but gain", "SH600000"),
+                contrastDictionary(scores, Set.of("not"), Map.of(), Set.of("but")),
+                contrastAlgorithm("0.5"));
+
+        // first gain +20; "not" pending is dropped at the marker; second gain +40
+        assertThat(result.score()).isEqualByComparingTo("60.00");
+    }
+
+    /** A disabled contrast policy (null) is byte-for-byte the legacy behaviour. */
+    @Test
+    void disabledContrastKeepsTheLegacyScore() {
+        Map<String, BigDecimal> scores = new LinkedHashMap<>();
+        scores.put("gain", new BigDecimal("40"));
+        scores.put("decline", new BigDecimal("-40"));
+        DictionarySnapshot withMarkers = contrastDictionary(
+                scores, Set.of(), Map.of(), Set.of("but"));
+        DictionarySnapshot withoutMarkers = new DictionarySnapshot(
+                "dict-contrast", scores, Set.of(), Map.of(), false);
+
+        SentimentResult marked = engine.evaluate(
+                input("gain but decline", "SH600000"), withMarkers, algorithm());
+        SentimentResult plain = engine.evaluate(
+                input("gain but decline", "SH600000"), withoutMarkers, algorithm());
+
+        assertThat(marked.score()).isEqualByComparingTo("0.00");
+        assertThat(plain.score()).isEqualByComparingTo(marked.score());
+    }
 }

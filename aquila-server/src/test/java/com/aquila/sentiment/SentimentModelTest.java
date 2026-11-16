@@ -148,4 +148,93 @@ class SentimentModelTest {
         // The 15-minute grid itself stays valid for every window type.
         assertThat(new WindowKey("SH600000", "24h", WINDOW_END).durationSeconds()).isEqualTo(86_400L);
     }
+
+    // ---- explicit inputs for PO decisions #4 (contrast) and #6 (differentiated weights) ----
+
+    @Test
+    void contrastPolicyRequiresExplicitStrategyAndDiscountInRange() {
+        assertThatThrownBy(() -> new ContrastPolicy(null, new BigDecimal("0.5")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("strategy");
+        assertThatThrownBy(() -> new ContrastPolicy(
+                ContrastPolicy.ContrastStrategy.FIRST_MARKER_SPLIT, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("preContrastWeight");
+        assertThatThrownBy(() -> new ContrastPolicy(
+                ContrastPolicy.ContrastStrategy.FIRST_MARKER_SPLIT, new BigDecimal("-0.01")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("preContrastWeight");
+        assertThatThrownBy(() -> new ContrastPolicy(
+                ContrastPolicy.ContrastStrategy.FIRST_MARKER_SPLIT, new BigDecimal("1.01")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("preContrastWeight");
+        // Boundaries 0 and 1 are both legal explicit discounts.
+        assertThat(new ContrastPolicy(
+                ContrastPolicy.ContrastStrategy.FIRST_MARKER_SPLIT, BigDecimal.ZERO)
+                .preContrastWeight()).isEqualByComparingTo("0");
+        assertThat(new ContrastPolicy(
+                ContrastPolicy.ContrastStrategy.FIRST_MARKER_SPLIT, BigDecimal.ONE)
+                .preContrastWeight()).isEqualByComparingTo("1");
+    }
+
+    @Test
+    void contrastMarkersAreDeeplyImmutableAndDefaultToEmpty() {
+        Map<String, BigDecimal> scores = Map.of("gain", new BigDecimal("40"));
+        java.util.Set<String> markers = new java.util.HashSet<>(Set.of("but", "however"));
+        DictionarySnapshot snapshot = new DictionarySnapshot(
+                "dict-1", scores, Set.of(), Map.of(), false, markers);
+
+        markers.add("though");
+        assertThat(snapshot.contrastMarkers()).containsExactlyInAnyOrder("but", "however");
+        assertThatThrownBy(() -> snapshot.contrastMarkers().add("new"))
+                .isInstanceOf(UnsupportedOperationException.class);
+        // The backward-compatible constructor carries an explicitly empty marker set.
+        assertThat(new DictionarySnapshot("dict-2", scores, Set.of(), Map.of(), false)
+                .contrastMarkers()).isEmpty();
+    }
+
+    @Test
+    void sampleSignalsRejectNegativeAndBlankInputs() {
+        assertThatThrownBy(() -> new SampleSignals(new BigDecimal("-0.1"), 1L, "OFFICIAL"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("quality");
+        assertThatThrownBy(() -> new SampleSignals(BigDecimal.ONE, -1L, "OFFICIAL"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("interactionCount");
+        assertThatThrownBy(() -> new SampleSignals(BigDecimal.ONE, 1L, " "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sourceTier");
+    }
+
+    @Test
+    void weightPolicyRequiresExplicitNonNegativeCoefficientsAndTiers() {
+        Map<String, BigDecimal> tiers = Map.of("OFFICIAL", BigDecimal.ONE);
+        assertThatThrownBy(() -> new WeightPolicy(
+                new BigDecimal("-0.1"), BigDecimal.ONE, 100L, tiers))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("qualityFactor");
+        assertThatThrownBy(() -> new WeightPolicy(
+                BigDecimal.ONE, new BigDecimal("-0.1"), 100L, tiers))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("interactionFactor");
+        assertThatThrownBy(() -> new WeightPolicy(
+                BigDecimal.ONE, BigDecimal.ONE, 0L, tiers))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("interactionNorm");
+        assertThatThrownBy(() -> new WeightPolicy(
+                BigDecimal.ONE, BigDecimal.ONE, 100L, Map.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sourceWeights");
+        assertThatThrownBy(() -> new WeightPolicy(
+                BigDecimal.ONE, BigDecimal.ONE, 100L, Map.of("BAD", new BigDecimal("-1"))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sourceWeights");
+        // The frozen tier map is a defensive copy and is unmodifiable.
+        java.util.Map<String, BigDecimal> mutable = new java.util.HashMap<>(tiers);
+        WeightPolicy policy = new WeightPolicy(BigDecimal.ONE, BigDecimal.ONE, 100L, mutable);
+        mutable.put("EXTRA", BigDecimal.TEN);
+        assertThat(policy.sourceWeights()).containsOnlyKeys("OFFICIAL");
+        assertThatThrownBy(() -> policy.sourceWeights().put("EXTRA", BigDecimal.ONE))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
 }

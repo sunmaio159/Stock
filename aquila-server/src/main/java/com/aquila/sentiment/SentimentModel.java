@@ -37,10 +37,22 @@ public final class SentimentModel {
             Map<String, BigDecimal> wordScores,
             Set<String> negations,
             Map<String, BigDecimal> degreeMultipliers,
-            boolean calibrated) {
+            boolean calibrated,
+            Set<String> contrastMarkers) {
+        /** Backward-compatible view with no contrast markers (the contrast rule is off). */
+        public DictionarySnapshot(
+                String dictVersion,
+                Map<String, BigDecimal> wordScores,
+                Set<String> negations,
+                Map<String, BigDecimal> degreeMultipliers,
+                boolean calibrated) {
+            this(dictVersion, wordScores, negations, degreeMultipliers, calibrated, Set.of());
+        }
+
         public DictionarySnapshot {
             requireText(dictVersion, "dictVersion");
-            if (wordScores == null || negations == null || degreeMultipliers == null) {
+            if (wordScores == null || negations == null || degreeMultipliers == null
+                    || contrastMarkers == null) {
                 throw new IllegalArgumentException("Dictionary snapshot inputs must not be null");
             }
             // TreeMap/TreeSet give a deterministic iteration order for longest-match scans;
@@ -49,6 +61,36 @@ public final class SentimentModel {
             wordScores = Collections.unmodifiableSortedMap(new TreeMap<>(wordScores));
             negations = Collections.unmodifiableSortedSet(new TreeSet<>(negations));
             degreeMultipliers = Collections.unmodifiableSortedMap(new TreeMap<>(degreeMultipliers));
+            contrastMarkers = Collections.unmodifiableSortedSet(new TreeSet<>(contrastMarkers));
+        }
+    }
+
+    /**
+     * Explicit, versioned contrast (concessive) rule — PO decision #4 (unified plan 9.1).
+     * The engine invents neither a marker list, nor a split scope, nor a discount factor:
+     * all three arrive from a published dictionary/algorithm snapshot. A {@code null}
+     * contrast policy on the algorithm snapshot means the rule is explicitly disabled, so
+     * existing versioned snapshots keep their exact behaviour byte-for-byte.
+     *
+     * <p>{@link ContrastStrategy#FIRST_MARKER_SPLIT} is the deterministic mechanism: the
+     * first contrast marker splits the section. Score terms before it are discounted by
+     * {@code preContrastWeight}; score terms at/after it keep full section weight. Negation
+     * and degree state never carries across the split. The choice of markers and of the
+     * discount factor is PO-owned and has no default here.
+     */
+    public record ContrastPolicy(ContrastStrategy strategy, BigDecimal preContrastWeight) {
+        public enum ContrastStrategy { FIRST_MARKER_SPLIT }
+
+        public ContrastPolicy {
+            if (strategy == null) {
+                throw new IllegalArgumentException(
+                        "contrast strategy is an explicit versioned choice");
+            }
+            if (preContrastWeight == null
+                    || preContrastWeight.signum() < 0
+                    || preContrastWeight.compareTo(BigDecimal.ONE) > 0) {
+                throw new IllegalArgumentException("preContrastWeight must be in [0,1]");
+            }
         }
     }
 
@@ -76,7 +118,23 @@ public final class SentimentModel {
             boolean excludeOppositeStanceMultiSecurity,
             BigDecimal titleWeight,
             BigDecimal bodyWeight,
-            ConfidenceStrategy confidenceStrategy) {
+            ConfidenceStrategy confidenceStrategy,
+            ContrastPolicy contrast) {
+        /** Backward-compatible view with the contrast rule explicitly disabled. */
+        public AlgorithmSnapshot(
+                String algoVersion,
+                BigDecimal minConfidence,
+                int fullConfidenceHits,
+                int maxEvidenceHits,
+                boolean excludeOppositeStanceMultiSecurity,
+                BigDecimal titleWeight,
+                BigDecimal bodyWeight,
+                ConfidenceStrategy confidenceStrategy) {
+            this(algoVersion, minConfidence, fullConfidenceHits, maxEvidenceHits,
+                    excludeOppositeStanceMultiSecurity, titleWeight, bodyWeight,
+                    confidenceStrategy, null);
+        }
+
         public AlgorithmSnapshot {
             requireText(algoVersion, "algoVersion");
             if (minConfidence == null
@@ -194,7 +252,24 @@ public final class SentimentModel {
             String exclusionReason,
             boolean oppositeStance,
             Instant publishedAt,
-            String canonicalGroupId) {
+            String canonicalGroupId,
+            SampleSignals signals) {
+        /** Backward-compatible view with no quality/interaction/source attributes. */
+        public AggregationSample(
+                String docRevisionId,
+                List<String> securityCodes,
+                BigDecimal score,
+                BigDecimal confidence,
+                int mentionCount,
+                Eligibility eligibility,
+                String exclusionReason,
+                boolean oppositeStance,
+                Instant publishedAt,
+                String canonicalGroupId) {
+            this(docRevisionId, securityCodes, score, confidence, mentionCount, eligibility,
+                    exclusionReason, oppositeStance, publishedAt, canonicalGroupId, null);
+        }
+
         public AggregationSample {
             requireText(docRevisionId, "docRevisionId");
             securityCodes = securityCodes == null ? List.of() : List.copyOf(securityCodes);
@@ -209,13 +284,69 @@ public final class SentimentModel {
     }
 
     /**
-     * How a sample contributes to the directional mean. UNIFORM is the only interpretation
-     * the mechanism currently implements; quality/interaction/source weights become a
-     * further constant only when the PO freezes them (unified plan 9.2), so equal weight
-     * is an explicit versioned choice rather than a hidden default.
+     * How a sample contributes to the directional mean. UNIFORM is the original explicit
+     * versioned choice; QUALITY_INTERACTION_SOURCE is the mechanism added for PO decision
+     * #6 (unified plan 9.2). The latter requires an explicit {@link WeightPolicy} on the
+     * aggregation policy and explicit {@link SampleSignals} on each sample — no coefficient
+     * is hidden in the engine, so equal weight remains an explicit choice rather than a
+     * default.
      */
     public enum SampleWeighting {
-        UNIFORM
+        UNIFORM, QUALITY_INTERACTION_SOURCE
+    }
+
+    /**
+     * The observable quality/interaction/source attributes of one sample (PO decision #6).
+     * They are carried on the sample so a versioned policy can turn them into a weight; the
+     * engine never infers them from a score or a mention count. A {@code null} signals field
+     * means the sample has no such attributes and can only be used with UNIFORM weighting.
+     */
+    public record SampleSignals(BigDecimal quality, long interactionCount, String sourceTier) {
+        public SampleSignals {
+            if (quality == null || quality.signum() < 0) {
+                throw new IllegalArgumentException("quality must be an explicit non-negative value");
+            }
+            if (interactionCount < 0) {
+                throw new IllegalArgumentException("interactionCount must not be negative");
+            }
+            requireText(sourceTier, "sourceTier");
+        }
+    }
+
+    /**
+     * Explicit coefficients that turn {@link SampleSignals} into a multiplier (PO decision
+     * #6). The multiplier is
+     * {@code (1 + qualityFactor*quality + interactionFactor*(interactionCount/interactionNorm))
+     * * sourceWeights[sourceTier]}, rounded once at the end to the policy decay's
+     * {@code weightScale}. There is no default coefficient and no default source tier: an
+     * unknown tier fails closed rather than silently receiving weight 1.
+     */
+    public record WeightPolicy(
+            BigDecimal qualityFactor,
+            BigDecimal interactionFactor,
+            long interactionNorm,
+            Map<String, BigDecimal> sourceWeights) {
+        public WeightPolicy {
+            if (qualityFactor == null || qualityFactor.signum() < 0) {
+                throw new IllegalArgumentException("qualityFactor must be explicit and non-negative");
+            }
+            if (interactionFactor == null || interactionFactor.signum() < 0) {
+                throw new IllegalArgumentException("interactionFactor must be explicit and non-negative");
+            }
+            if (interactionNorm <= 0) {
+                throw new IllegalArgumentException("interactionNorm must be positive");
+            }
+            if (sourceWeights == null || sourceWeights.isEmpty()) {
+                throw new IllegalArgumentException("sourceWeights must be explicit");
+            }
+            sourceWeights.forEach((tier, weight) -> {
+                if (tier == null || tier.isBlank() || weight == null || weight.signum() < 0) {
+                    throw new IllegalArgumentException(
+                            "sourceWeights must map tiers to non-negative weights");
+                }
+            });
+            sourceWeights = Collections.unmodifiableSortedMap(new TreeMap<>(sourceWeights));
+        }
     }
 
     /**
@@ -258,7 +389,17 @@ public final class SentimentModel {
             String policyVersion,
             boolean calibrated,
             SampleWeighting sampleWeighting,
-            DecayPolicy decay) {
+            DecayPolicy decay,
+            WeightPolicy weightPolicy) {
+        /** Backward-compatible view: UNIFORM weighting with no differentiated coefficients. */
+        public AggregationPolicy(
+                String policyVersion,
+                boolean calibrated,
+                SampleWeighting sampleWeighting,
+                DecayPolicy decay) {
+            this(policyVersion, calibrated, sampleWeighting, decay, null);
+        }
+
         public AggregationPolicy {
             requireText(policyVersion, "policyVersion");
             if (sampleWeighting == null) {
@@ -266,6 +407,11 @@ public final class SentimentModel {
             }
             if (decay == null) {
                 throw new IllegalArgumentException("decay is an explicit versioned choice");
+            }
+            if (sampleWeighting == SampleWeighting.QUALITY_INTERACTION_SOURCE
+                    && weightPolicy == null) {
+                throw new IllegalArgumentException(
+                        "QUALITY_INTERACTION_SOURCE requires an explicit weightPolicy");
             }
         }
     }

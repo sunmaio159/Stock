@@ -143,8 +143,12 @@ class LifecycleRaceIntegrationTest {
         JobLease lease = worker.claim(fixture.jobId());
         assertThat(lease).isNotNull();
 
+        // A fully-past UTC window is deterministic: the guard compares against the JVM
+        // clock, so deriving valid_to from the DB's UTC_TIMESTAMP - 1s races cross-host
+        // clock drift (the DB and JVM are different machines) and made this test flaky.
         worker.setBeforeCommitHook(() -> updateOnSeparateConnection("""
-                UPDATE m3_source_config SET valid_to = UTC_TIMESTAMP(6) - INTERVAL 1 SECOND
+                UPDATE m3_source_config
+                SET valid_from = '2020-01-01 00:00:00', valid_to = '2020-01-02 00:00:00'
                 WHERE source_code = ?
                 """, GovernanceFixture.SOURCE_CODE));
 

@@ -91,8 +91,12 @@ class SentimentLifecycleIntegrationTest {
     @Test
     void expiredValidityWindowBeforeCommitBlocksTheSentimentResult() {
         Fixture fixture = prepare();
+        // Deterministic fully-past UTC window: comparing a DB UTC_TIMESTAMP against the
+        // guard's JVM clock races cross-host drift at a 1s margin, so use a fixed past
+        // window with the same "expired before commit" semantics.
         analysis.setBeforeCommitHook(() -> updateOnSeparateConnection("""
-                UPDATE m3_source_config SET valid_to = UTC_TIMESTAMP(6) - INTERVAL 1 SECOND
+                UPDATE m3_source_config
+                SET valid_from = '2020-01-01 00:00:00', valid_to = '2020-01-02 00:00:00'
                 WHERE source_code = ?
                 """, GovernanceFixture.SOURCE_CODE));
 

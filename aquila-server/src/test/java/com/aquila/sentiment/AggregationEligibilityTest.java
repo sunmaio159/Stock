@@ -255,4 +255,103 @@ class AggregationEligibilityTest {
                 () -> new WindowKey("SH600000", "15m",
                         Instant.parse("2026-11-15T03:07:00Z")));
     }
+
+    // ---- PO decision #6: quality / interaction / source differentiated weights -----
+
+    private static AggregationSample withSignals(
+            String revisionId, String score, String quality, long interactions, String sourceTier) {
+        return new AggregationSample(
+                revisionId, List.of("SH600000"),
+                new BigDecimal(score), new BigDecimal("0.90"), 1, Eligibility.ELIGIBLE, null,
+                false, WINDOW_START, revisionId,
+                new SampleSignals(new BigDecimal(quality), interactions, sourceTier));
+    }
+
+    private static AggregationPolicy differentiated() {
+        return new AggregationPolicy(
+                "policy-diff", true, SampleWeighting.QUALITY_INTERACTION_SOURCE,
+                new DecayPolicy(DecayPolicy.DecayType.NONE, null, 6),
+                new WeightPolicy(
+                        new BigDecimal("0.5"), new BigDecimal("0.01"), 100L,
+                        java.util.Map.of("OFFICIAL", new BigDecimal("2"),
+                                "FORUM", new BigDecimal("0.5"),
+                                "BLOG", BigDecimal.ONE)));
+    }
+
+    /**
+     * base weight = (1 + 0.5*quality + 0.01*(interactions/100)) * sourceWeight.
+     * Two samples, one rich OFFICIAL and one thin FORUM, must not get the uniform mean.
+     * Exact values pin the arithmetic so a swapped factor or wrong tier fails.
+     */
+    @Test
+    void differentiatedWeightsChangeTheDirectionalMean() {
+        AggregationSample rich = withSignals("rev-rich", "80", "1.0", 100L, "OFFICIAL");
+        AggregationSample thin = withSignals("rev-thin", "20", "0.0", 0L, "FORUM");
+        AnalysisVersion version = new AnalysisVersion(
+                "av-diff", "policy-diff", differentiated(), List.of(rich, thin));
+
+        WindowResult result = aggregation.rebuild(key(), version);
+
+        // rich: (1+0.5+0.01)*2 = 3.02 ; thin: (1+0+0)*0.5 = 0.5
+        // (3.02*80 + 0.5*20) / (3.02+0.5) = 251.6 / 3.52 = 71.477272... -> 71.48
+        assertThat(result.score()).isEqualByComparingTo("71.48");
+        assertThat(result.eligibleSampleCount()).isEqualTo(2);
+    }
+
+    /** An UNIFORM policy with the same samples yields the plain mean — the two differ. */
+    @Test
+    void uniformAndDifferentiatedWeightsDiverge() {
+        AggregationSample rich = withSignals("rev-rich", "80", "1.0", 100L, "OFFICIAL");
+        AggregationSample thin = withSignals("rev-thin", "20", "0.0", 0L, "FORUM");
+        WindowResult uniform = aggregation.rebuild(key(), version(true, List.of(rich, thin)));
+        WindowResult differentiatedResult = aggregation.rebuild(
+                key(), new AnalysisVersion(
+                        "av-diff", "policy-diff", differentiated(), List.of(rich, thin)));
+
+        assertThat(uniform.score()).isEqualByComparingTo("50.00");
+        assertThat(differentiatedResult.score()).isNotEqualByComparingTo(uniform.score());
+    }
+
+    /** Exponential decay composes with the differentiated base weight, not replaces it. */
+    @Test
+    void differentiatedWeightsComposeWithDecay() {
+        AggregationPolicy decayed = new AggregationPolicy(
+                "policy-diff", true, SampleWeighting.QUALITY_INTERACTION_SOURCE,
+                new DecayPolicy(DecayPolicy.DecayType.EXPONENTIAL_HALF_LIFE, 900L, 6),
+                differentiated().weightPolicy());
+        AggregationSample rich = withSignals("rev-rich", "80", "1.0", 100L, "OFFICIAL");
+        // age at WINDOW_START is 900s = one half-life => decay 0.5
+        WindowResult result = aggregation.rebuild(key(), new AnalysisVersion(
+                "av-diff", "policy-diff", decayed, List.of(rich)));
+
+        // single sample: decay cancels in the mean => still exactly the sample score.
+        assertThat(result.score()).isEqualByComparingTo("80.00");
+    }
+
+    /** Unknown source tiers fail closed instead of silently receiving weight 1. */
+    @Test
+    void unknownSourceTierIsRefused() {
+        AggregationSample rogue = withSignals("rev-rogue", "80", "1.0", 10L, "UNLISTED");
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> aggregation.rebuild(key(), new AnalysisVersion(
+                        "av-diff", "policy-diff", differentiated(), List.of(rogue))));
+    }
+
+    /** Differentiated weighting refuses a sample with no signals rather than guessing. */
+    @Test
+    void differentiatedWeightsRefuseSampleWithoutSignals() {
+        AggregationSample noSignals = eligible("rev-plain", "80", WINDOW_START);
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> aggregation.rebuild(key(), new AnalysisVersion(
+                        "av-diff", "policy-diff", differentiated(), List.of(noSignals))));
+    }
+
+    /** A QUALITY_INTERACTION_SOURCE policy without an explicit weight policy cannot be built. */
+    @Test
+    void differentiatedPolicyRequiresExplicitWeights() {
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> new AggregationPolicy(
+                        "policy-diff", true, SampleWeighting.QUALITY_INTERACTION_SOURCE,
+                        new DecayPolicy(DecayPolicy.DecayType.NONE, null, 6)));
+    }
 }

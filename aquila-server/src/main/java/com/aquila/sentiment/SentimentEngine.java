@@ -43,12 +43,22 @@ public final class SentimentEngine {
         Map<String, BigDecimal> degrees = lowerKeys(dictionary.degreeMultipliers());
         Set<String> negations = new LinkedHashSet<>();
         dictionary.negations().forEach(word -> negations.add(word.toLowerCase(Locale.ROOT)));
+        Set<String> contrastMarkers = new LinkedHashSet<>();
+        dictionary.contrastMarkers().forEach(
+                word -> contrastMarkers.add(word.toLowerCase(Locale.ROOT)));
+        // A disabled contrast policy is an explicit no-op: an empty marker set and a
+        // unit discount keep every pre-existing versioned snapshot byte-for-byte stable.
+        ContrastPolicy contrast = algorithm.contrast();
+        BigDecimal preContrastWeight = contrast == null
+                ? BigDecimal.ONE : contrast.preContrastWeight();
 
         // Longest-match-first, then lexicographic, over a sorted set: deterministic for
-        // identical versioned inputs.
+        // identical versioned inputs. Markers join the set so a multi-character marker is
+        // never partially consumed by a shorter score term.
         Set<String> terms = new LinkedHashSet<>(scores.keySet());
         terms.addAll(negations);
         terms.addAll(degrees.keySet());
+        terms.addAll(contrastMarkers);
         List<String> ordered = terms.stream()
                 .sorted(Comparator.comparingInt(String::length).reversed()
                         .thenComparing(Comparator.naturalOrder()))
@@ -56,9 +66,9 @@ public final class SentimentEngine {
 
         Accumulator acc = new Accumulator(algorithm.maxEvidenceHits());
         scan(input.title().toLowerCase(Locale.ROOT), algorithm.titleWeight(),
-                scores, negations, degrees, ordered, acc);
+                scores, negations, degrees, contrastMarkers, preContrastWeight, ordered, acc);
         scan(input.body().toLowerCase(Locale.ROOT), algorithm.bodyWeight(),
-                scores, negations, degrees, ordered, acc);
+                scores, negations, degrees, contrastMarkers, preContrastWeight, ordered, acc);
         // Note: scan() stops collecting evidence once acc's cap is reached, so a long
         // document cannot build an unbounded temporary hit list (review 2026-11-16 M-3).
 
@@ -92,13 +102,20 @@ public final class SentimentEngine {
                 score, confidence, null, eligibility, exclusionReason, acc.hits, oppositeStance);
     }
 
-    /** One section (title or body) of the document, weighted by its explicit versioned weight. */
+    /**
+     * One section (title or body) of the document, weighted by its explicit versioned weight.
+     * When the contrast rule is enabled the first marker splits the section: score terms
+     * before it are discounted, terms at/after it keep full weight, and negation/degree
+     * state is reset at the split so it never carries across the concessive boundary.
+     */
     private void scan(
             String text,
             BigDecimal sectionWeight,
             Map<String, BigDecimal> scores,
             Set<String> negations,
             Map<String, BigDecimal> degrees,
+            Set<String> contrastMarkers,
+            BigDecimal preContrastWeight,
             List<String> ordered,
             Accumulator acc) {
         BigDecimal total = BigDecimal.ZERO;
@@ -107,6 +124,7 @@ public final class SentimentEngine {
         boolean hasNegative = false;
         boolean negateNext = false;
         BigDecimal pendingDegree = BigDecimal.ONE;
+        boolean afterContrast = false;
         List<String> hits = new ArrayList<>();
 
         int index = 0;
@@ -127,6 +145,16 @@ public final class SentimentEngine {
                 continue;
             }
             index += matched.length();
+            if (contrastMarkers.contains(matched)) {
+                // The first marker is the only split (FIRST_MARKER_SPLIT). Negation and
+                // degree pending from the concessive clause must not leak past it.
+                if (!afterContrast) {
+                    afterContrast = true;
+                    negateNext = false;
+                    pendingDegree = BigDecimal.ONE;
+                }
+                continue;
+            }
             if (negations.contains(matched)) {
                 negateNext = true;
             } else if (degrees.containsKey(matched)) {
@@ -135,6 +163,7 @@ public final class SentimentEngine {
                 BigDecimal adjusted = scores.get(matched)
                         .multiply(negateNext ? BigDecimal.valueOf(-1) : BigDecimal.ONE)
                         .multiply(pendingDegree)
+                        .multiply(afterContrast ? BigDecimal.ONE : preContrastWeight)
                         .multiply(sectionWeight);
                 total = total.add(adjusted);
                 scoreHits++;
