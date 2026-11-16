@@ -222,12 +222,22 @@ public final class SentimentModel {
      * Explicit, versioned decay choice. NONE means no time decay (an explicit decision,
      * not an implicit default); EXPONENTIAL_HALF_LIFE weights a sample by
      * {@code 0.5^(age / halfLifeSeconds)} relative to the window end.
+     *
+     * <p>{@code weightScale} is the explicit decimal precision of the computed weight
+     * (review 2026-11-16 Important-1): the engine uses {@link StrictMath#pow}, which is
+     * bit-reproducible across JVMs, and rounds to this scale with HALF_UP. Carrying the
+     * scale in the versioned policy means two nodes running the same policy version cannot
+     * disagree on a window score because of an implicit {@code MathContext}. It is required
+     * for every decay type so the arithmetic contract is part of the version identity.
      */
-    public record DecayPolicy(DecayType type, Long halfLifeSeconds) {
+    public record DecayPolicy(DecayType type, Long halfLifeSeconds, int weightScale) {
         public enum DecayType { NONE, EXPONENTIAL_HALF_LIFE }
         public DecayPolicy {
             if (type == null) {
                 throw new IllegalArgumentException("Decay type is an explicit versioned choice");
+            }
+            if (weightScale < 0 || weightScale > 18) {
+                throw new IllegalArgumentException("weightScale must be an explicit 0..18 value");
             }
             if (type == DecayType.NONE && halfLifeSeconds != null) {
                 throw new IllegalArgumentException("No decay must not carry a half-life");

@@ -2,14 +2,11 @@ package com.aquila.sentiment;
 
 import com.aquila.sentiment.SentimentModel.*;
 import java.math.BigDecimal;
-import java.math.MathContext;
 import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 /**
  * Version-keyed window aggregation over explicit versioned samples.
@@ -41,7 +38,6 @@ public final class AggregationService {
         BigDecimal weightedTotal = BigDecimal.ZERO;
         BigDecimal weightSum = BigDecimal.ZERO;
         List<String> exclusionReasons = new ArrayList<>();
-        Set<String> seenCanonicalGroups = new HashSet<>();
 
         Instant windowStart = key.windowEnd().minusSeconds(key.durationSeconds());
         // First pass: one representative per canonical group inside the window — the
@@ -61,7 +57,6 @@ public final class AggregationService {
             }
         }
         for (java.util.Map.Entry<String, AggregationSample> entry : representatives.entrySet()) {
-            seenCanonicalGroups.add(entry.getKey());
             AggregationSample sample = entry.getValue();
             mentionCount += sample.mentionCount();
             if (sample.eligibility() != Eligibility.ELIGIBLE) {
@@ -121,6 +116,10 @@ public final class AggregationService {
         long ageSeconds = Math.max(0,
                 Duration.between(sample.publishedAt(), key.windowEnd()).toSeconds());
         double exponent = (double) ageSeconds / policy.decay().halfLifeSeconds();
-        return new BigDecimal(Math.pow(0.5, exponent), new MathContext(12));
+        // StrictMath.pow is bit-reproducible across JVMs (Math.pow may differ by 1 ulp),
+        // and the policy's explicit weightScale fixes the decimal precision instead of a
+        // hidden MathContext — same versioned inputs give the same window score everywhere.
+        return BigDecimal.valueOf(StrictMath.pow(0.5, exponent))
+                .setScale(policy.decay().weightScale(), RoundingMode.HALF_UP);
     }
 }

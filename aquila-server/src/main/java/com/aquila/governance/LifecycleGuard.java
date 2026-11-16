@@ -1,5 +1,6 @@
 package com.aquila.governance;
 
+import com.aquila.sourcepolicy.SourceValidityWindow;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
@@ -30,8 +31,11 @@ public class LifecycleGuard {
         this.clock = clock == null ? Clock.systemUTC() : clock;
     }
 
-    /** Test seam: overrides the clock used for validity-window checks. Production never calls it. */
-    public void setClock(Clock clock) {
+    /**
+     * Test seam: overrides the clock used for validity-window checks. Package-private so
+     * production code cannot reach it; tests in this package restore UTC in cleanup.
+     */
+    void setClock(Clock clock) {
         this.clock = clock == null ? Clock.systemUTC() : clock;
     }
 
@@ -63,10 +67,8 @@ public class LifecycleGuard {
                 WHERE source_code = ? FOR UPDATE
                 """, (resultSet, rowNumber) -> new SourceRow(
                         resultSet.getString(1), resultSet.getBoolean(2), resultSet.getBoolean(3),
-                        resultSet.getTimestamp(4) == null
-                                ? null : resultSet.getTimestamp(4).toInstant(),
-                        resultSet.getTimestamp(5) == null
-                                ? null : resultSet.getTimestamp(5).toInstant()),
+                        SourceValidityWindow.readUtc(resultSet, "valid_from"),
+                        SourceValidityWindow.readUtc(resultSet, "valid_to")),
                 ref.sourceCode());
         if (sources.isEmpty()) {
             throw new LifecycleBlockedException("REVOKED", "Source configuration is missing");
@@ -78,13 +80,12 @@ public class LifecycleGuard {
             throw new LifecycleBlockedException(
                     "REVOKED", "Source permission revoked or capability withheld");
         }
-        // Same boundary semantics as SourcePolicy: [valid_from, valid_to) with an open
-        // upper end, checked as a current read so an expiry committed between compute
-        // and commit blocks the derived write.
-        Instant now = clock.instant();
-        if (source.validFrom() == null
-                || now.isBefore(source.validFrom())
-                || (source.validTo() != null && !now.isBefore(source.validTo()))) {
+        // One shared predicate with SourcePolicy: [valid_from, valid_to) over UTC wall-clock
+        // DATETIMEs, checked as a current read so an expiry committed between compute and
+        // commit blocks the derived write. No second copy of the boundary arithmetic (review
+        // 2026-11-16 Important-2).
+        if (!SourceValidityWindow.contains(
+                clock.instant(), source.validFrom(), source.validTo())) {
             throw new LifecycleBlockedException(
                     "REVOKED", "Source permission is outside its validity window");
         }

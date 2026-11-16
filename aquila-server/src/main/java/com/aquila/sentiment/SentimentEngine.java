@@ -59,6 +59,8 @@ public final class SentimentEngine {
                 scores, negations, degrees, ordered, acc);
         scan(input.body().toLowerCase(Locale.ROOT), algorithm.bodyWeight(),
                 scores, negations, degrees, ordered, acc);
+        // Note: scan() stops collecting evidence once acc's cap is reached, so a long
+        // document cannot build an unbounded temporary hit list (review 2026-11-16 M-3).
 
         boolean oppositeStance = acc.hasPositive && acc.hasNegative;
         boolean ambiguous = algorithm.excludeOppositeStanceMultiSecurity()
@@ -140,7 +142,11 @@ public final class SentimentEngine {
                 hasNegative |= adjusted.signum() < 0;
                 negateNext = false;
                 pendingDegree = BigDecimal.ONE;
-                hits.add(matched);
+                // Early stop at the versioned cap: the score keeps accumulating over the
+                // whole text, only the evidence list is bounded.
+                if (hits.size() < acc.maxEvidenceHits()) {
+                    hits.add(matched);
+                }
             }
         }
         acc.absorb(total, scoreHits, hasPositive, hasNegative, hits);
@@ -203,6 +209,10 @@ public final class SentimentEngine {
 
         Accumulator(int maxEvidenceHits) {
             this.maxEvidenceHits = maxEvidenceHits;
+        }
+
+        int maxEvidenceHits() {
+            return maxEvidenceHits;
         }
 
         void absorb(BigDecimal sectionTotal, int sectionHits, boolean sectionPositive,

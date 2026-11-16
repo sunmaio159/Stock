@@ -37,7 +37,7 @@ class AggregationEligibilityTest {
                 "policy-1",
                 new AggregationPolicy(
                         "policy-1", calibrated, SampleWeighting.UNIFORM,
-                        new DecayPolicy(DecayPolicy.DecayType.NONE, null)),
+                        new DecayPolicy(DecayPolicy.DecayType.NONE, null, 12)),
                 samples);
     }
 
@@ -230,10 +230,10 @@ class AggregationEligibilityTest {
 
         AggregationPolicy noDecay = new AggregationPolicy(
                 "policy-1", true, SampleWeighting.UNIFORM,
-                new DecayPolicy(DecayPolicy.DecayType.NONE, null));
+                new DecayPolicy(DecayPolicy.DecayType.NONE, null, 12));
         AggregationPolicy decayed = new AggregationPolicy(
                 "policy-1", true, SampleWeighting.UNIFORM,
-                new DecayPolicy(DecayPolicy.DecayType.EXPONENTIAL_HALF_LIFE, 900L));
+                new DecayPolicy(DecayPolicy.DecayType.EXPONENTIAL_HALF_LIFE, 900L, 12));
 
         WindowResult unweighted = aggregation.rebuild(key(), new AnalysisVersion(
                 "av-plain", "policy-1", noDecay, List.of(oldSample, freshSample)));
@@ -241,8 +241,11 @@ class AggregationEligibilityTest {
                 "av-decay", "policy-1", decayed, List.of(oldSample, freshSample)));
 
         assertThat(unweighted.score()).isEqualByComparingTo("50.00");
-        assertThat(weighted.score()).isLessThan(unweighted.score());
-        assertThat(weighted.score()).isNotNull();
+        // Review 2026-11-16 Important-1: pin the exact reproducible value, not just the
+        // direction. Weights are 0.500000000000 (age 900s) and 0.954841603910 (age 60s)
+        // at halfLife=900 and weightScale=12; StrictMath.pow + explicit scale fix 40.62
+        // across JVMs, while an implementation that changed the arithmetic would go red.
+        assertThat(weighted.score()).isEqualByComparingTo("40.62");
     }
 
     /** Review C-2: an unaligned window end is refused before any aggregation runs. */

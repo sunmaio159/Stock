@@ -168,7 +168,7 @@ public final class SentimentFixture {
     public static AggregationPolicy policy(boolean calibrated) {
         return new AggregationPolicy(
                 POLICY_VERSION, calibrated, SampleWeighting.UNIFORM,
-                new DecayPolicy(DecayPolicy.DecayType.NONE, null));
+                new DecayPolicy(DecayPolicy.DecayType.NONE, null, 12));
     }
 
     public static AnalysisVersion version(String versionId, AggregationSample... samples) {

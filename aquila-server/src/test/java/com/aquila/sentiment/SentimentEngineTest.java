@@ -230,4 +230,20 @@ class SentimentEngineTest {
         assertThat(inTitle.score()).isEqualByComparingTo("80.00");
         assertThat(inBody.score()).isEqualByComparingTo("40.00");
     }
+
+    /**
+     * Review 2026-11-16 M-3: the evidence list is bounded by the versioned
+     * maxEvidenceHits (20 in the fixture) while the score keeps accumulating over the
+     * whole text. Without the cap, hitWords would list all 25 matches.
+     */
+    @Test
+    void evidenceCollectionStopsAtTheVersionedCap() {
+        String manyHits = "gain ".repeat(25);
+        SentimentResult result = engine.evaluate(
+                input(manyHits, "SH600000"),
+                dictionary("dict-1", "10", "-10"), algorithm());
+
+        assertThat(result.hitWords()).hasSize(20);
+        assertThat(result.score()).isEqualByComparingTo("100.00");
+    }
 }

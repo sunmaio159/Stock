@@ -1,17 +1,17 @@
-package com.aquila.crawl;
+package com.aquila.sourcepolicy;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.aquila.auth.AuthMySqlCondition;
 import com.aquila.common.ApiException;
+import com.aquila.crawl.CrawlFixture;
 import com.aquila.masterdata.MasterDataFixture;
-import com.aquila.sourcepolicy.Permission;
-import com.aquila.sourcepolicy.SourcePolicy;
-import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,17 +24,18 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 /**
- * Audit 2026-11-15 (SourcePolicy clock injection): the validity window is a business-time
- * decision, so it must be testable against a fixed clock instead of racing the wall clock.
- * Boundary semantics locked here: {@code [valid_from, valid_to)} with an exclusive upper
- * end and an open-ended window when valid_to IS NULL.
+ * Audit 2026-11-15 (clock injection), review 2026-11-16 (discriminating boundaries):
+ * the validity window must be testable against a fixed clock, and every assertion must give
+ * the OPPOSITE verdict under the real clock — otherwise a no-op {@code setClock} would keep
+ * the suite green. Windows are built relative to today so "real now" sits inside the window
+ * for every refused case and outside it for every allowed case.
+ *
+ * <p>Boundary semantics: {@code [valid_from, valid_to)}; a NULL upper bound never expires.
  */
 @ExtendWith(AuthMySqlCondition.class)
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
 class SourcePolicyValidityWindowIntegrationTest {
 
-    private static final Instant WINDOW_START = Instant.parse("2026-11-05T00:00:00Z");
-    private static final Instant WINDOW_END = Instant.parse("2026-11-06T00:00:00Z");
     private static final String SOURCE = "WINDOW-SRC";
 
     @Autowired private JdbcTemplate jdbc;
@@ -52,16 +53,24 @@ class SourcePolicyValidityWindowIntegrationTest {
 
     @AfterEach
     void cleanup() {
+        // Symmetric reset: a leaked fixed clock would silently affect other cases sharing
+        // the cached Spring context (review 2026-11-16 Important-3).
         policy.setClock(Clock.systemUTC());
         CrawlFixture.clear(jdbc);
     }
 
+    private Instant today() {
+        return Instant.now().truncatedTo(ChronoUnit.DAYS);
+    }
+
     private void sourceWithWindow(Instant from, Instant to) {
         CrawlFixture.insertActiveSource(jdbc, SOURCE);
+        // Store the UTC wall clock in DATETIME columns, matching SourceValidityWindow.readUtc;
+        // a Timestamp bind would apply the JVM zone (Asia/Shanghai here) and shift boundaries.
         jdbc.update("""
                 UPDATE m3_source_config SET valid_from = ?, valid_to = ? WHERE source_code = ?
-                """, from == null ? null : Timestamp.from(from),
-                to == null ? null : Timestamp.from(to), SOURCE);
+                """, from == null ? null : LocalDateTime.ofInstant(from, ZoneOffset.UTC),
+                to == null ? null : LocalDateTime.ofInstant(to, ZoneOffset.UTC), SOURCE);
     }
 
     private void at(Instant now) {
@@ -70,22 +79,25 @@ class SourcePolicyValidityWindowIntegrationTest {
 
     @Test
     void insideTheWindowIsAllowed() {
-        sourceWithWindow(WINDOW_START, WINDOW_END);
-        at(Instant.parse("2026-11-05T12:00:00Z"));
+        // Fixed now is inside a window in the past; real today is outside → a no-op clock
+        // would refuse and the test would go red.
+        sourceWithWindow(today().minus(2, ChronoUnit.DAYS), today().minus(1, ChronoUnit.DAYS));
+        at(today().minus(2, ChronoUnit.DAYS).plusSeconds(1));
         assertThat(policy.permits(Permission.ACCESS, SOURCE)).isTrue();
     }
 
     @Test
     void theLowerBoundIsInclusive() {
-        sourceWithWindow(WINDOW_START, WINDOW_END);
-        at(WINDOW_START);
+        sourceWithWindow(today().minus(2, ChronoUnit.DAYS), today().minus(1, ChronoUnit.DAYS));
+        at(today().minus(2, ChronoUnit.DAYS));
         assertThat(policy.permits(Permission.ACCESS, SOURCE)).isTrue();
     }
 
     @Test
     void theUpperBoundIsExclusive() {
-        sourceWithWindow(WINDOW_START, WINDOW_END);
-        at(WINDOW_END);
+        // Real today is INSIDE this window; only the fixed clock at the upper bound refuses.
+        sourceWithWindow(today().minus(1, ChronoUnit.DAYS), today().plus(1, ChronoUnit.DAYS));
+        at(today().plus(1, ChronoUnit.DAYS));
         assertThat(policy.permits(Permission.ACCESS, SOURCE)).isFalse();
         assertThatThrownBy(() -> policy.require(Permission.ACCESS, SOURCE))
                 .isInstanceOf(ApiException.class)
@@ -95,14 +107,17 @@ class SourcePolicyValidityWindowIntegrationTest {
 
     @Test
     void beforeTheWindowIsRefused() {
-        sourceWithWindow(WINDOW_START, WINDOW_END);
-        at(Instant.parse("2026-11-04T23:59:59Z"));
+        // Real today is inside; only the fixed clock before the lower bound refuses.
+        sourceWithWindow(today().minus(1, ChronoUnit.DAYS), today().plus(1, ChronoUnit.DAYS));
+        at(today().minus(2, ChronoUnit.DAYS));
         assertThat(policy.permits(Permission.ACCESS, SOURCE)).isFalse();
     }
 
     @Test
     void anOpenEndedWindowNeverExpires() {
-        sourceWithWindow(WINDOW_START, null);
+        // Fixed now (2030) is after the lower bound; real today is before it, so a no-op
+        // clock would refuse this open-ended window and the test would go red.
+        sourceWithWindow(today().plus(10, ChronoUnit.DAYS), null);
         at(Instant.parse("2030-01-01T00:00:00Z"));
         assertThat(policy.permits(Permission.ACCESS, SOURCE)).isTrue();
     }

@@ -1432,3 +1432,41 @@ All 3 Critical / 8 Important / 3 Minor findings fixed:
 - **Still open:** Step 1 PO parameters, DictionaryView/OpenAPI (deferred), dictionary
   snapshot publication, window evidence-state state machine (Task 2), and a fresh
   independent review of these fix passes (`86b0638..HEAD`).
+
+## Round-3 independent review fixes (2026-11-16, commits after `92a9611`)
+
+Owner instruction: "继续" after two prior fix batches; per the standing "finish previous stages
+before advancing" rule, the two new commits were independently reviewed first (read-only,
+no MySQL ITs) and every codeable finding fixed in one pass.
+
+- **Stage C batch review:** no Critical, 3 Important + 4 Minor. Fixed: the licensed-source
+  validity window now uses one UTC-wall-clock contract (`SourceValidityWindow`: DATETIME is
+  read/written as UTC, removing the JVM Asia/Shanghai vs MySQL session drift) and one shared
+  half-open `[from,to)` predicate used by both the pre-write gate and the commit barrier;
+  LifecycleGuard's fixed-clock seam (previously never called) is locked by a 3-case IT at the
+  exact boundaries; both clock setters are package-private and every IT restores UTC. Wrote
+  `assertNoGovernanceWrites` to an unfiltered job count and corrected its overclaiming
+  comment. The concurrent redelivery IT is now deterministically interleaved via a
+  one-shot `RevisionService.afterDocumentLockHook` (T1 holds the doc row lock until T2 has
+  entered receive()), so it can no longer degrade to a sequential replay.
+- **Stage D batch review:** no Critical, 1 Important + 4 Minor. Fixed: `DecayPolicy` now
+  carries a mandatory explicit `weightScale` (0..18) and the engine uses `StrictMath.pow`
+  + `setScale(scale, HALF_UP)` — reproducible across JVMs, pinned by an exact 40.62
+  assertion; V6's bidirectional window CHECK conflicted with weight underflow, so the
+  applied V6 stays untouched and a new V7 makes the rule one-way (Task 2's publication
+  migration renumbers to V8); dead `seenCanonicalGroups` removed; evidence collection
+  early-stops at `maxEvidenceHits` with a 25→20 truncation IT. Test false positives closed:
+  the collation IT now asserts `information_schema.COLUMNS.COLLATION_NAME = utf8mb4_bin`
+  directly, and the tampered/superseded cases write over a separate connection inside the
+  transaction (real commit-time races).
+- **Falsification:** 6 probe groups, all red-then-restored with exact attribution — upper
+  bound as tautology → 3 red; decay removed → 1 red; V7 CHECK back to bidirectional → 1
+  red; V6 collation removed → 1 red; evidence caps removed → 1 red; lock hook not invoked
+  → 1 red. V6/V7 byte-restored (empty migration diff), C1 clean + V1–V7 replay green.
+- **Verification:** focused affected suite 95/95; full backend `-Pmysql-it` (excluding the
+  empty-schema gate `FlywayMySqlIntegrationTest`, which by design cannot pass once V1–V7 are
+  applied) **253/253 green**. No frontend/OpenAPI change, so those gates were not rerun.
+- **Still open:** the eight Step 1 PO parameters, `DictionaryView.vue`/`openapi.yaml`
+  (deferred), dictionary snapshot publication service, window evidence-state state machine
+  (Task 2), the four owner/parameter/load-dependent Stage C items, and a fresh independent
+  review of this pass.

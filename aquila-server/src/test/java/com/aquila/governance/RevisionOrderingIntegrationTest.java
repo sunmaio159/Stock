@@ -8,7 +8,7 @@ import com.aquila.crawl.ProcessingJobWorker;
 import com.aquila.masterdata.MasterDataFixture;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -44,10 +44,12 @@ class RevisionOrderingIntegrationTest {
     @BeforeEach
     void reset() {
         GovernanceFixture.reset(jdbc);
+        revisions.setAfterDocumentLockHook(null);
     }
 
     @AfterEach
     void cleanup() {
+        revisions.setAfterDocumentLockHook(null);
         GovernanceFixture.clear(jdbc);
     }
 
@@ -149,9 +151,12 @@ class RevisionOrderingIntegrationTest {
      * with two threads (each gets its own connection/transaction).
      *
      * <p>Stage C round-3 M-3: a single CountDownLatch could let the first worker finish
-     * before the second starts, silently degrading to a sequential replay. A CyclicBarrier
-     * holds BOTH workers back until they are genuinely side by side, and the assertions
-     * then cover every derived row, not just revisions and jobs.
+     * before the second starts, silently degrading to a sequential replay.
+     * <p>Stage C round-4 Minor-4: even a CyclicBarrier only proves both threads are ready —
+     * one can still acquire the lock and commit before the other issues any statement. The
+     * {@code afterDocumentLockHook} now holds T1 INSIDE the transaction with the doc row
+     * locked until T2 has entered receive(), so the overlap is deterministic: removing the
+     * "lock before ReadView" ordering makes T2 read a stale snapshot and allocate order 2.
      */
     @Test
     void concurrentLocalOrderRedeliveryCreatesOneRevision() throws Exception {
@@ -159,21 +164,42 @@ class RevisionOrderingIntegrationTest {
         ObservedDocument document = GovernanceFixture.observed(
                 "POST-6", null, "hash-concurrent", raw, GovernanceFixture.SECURITY_A);
 
+        CountDownLatch lockHeld = new CountDownLatch(1);
+        CountDownLatch secondEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicBoolean armed = new java.util.concurrent.atomic.AtomicBoolean(true);
+        revisions.setAfterDocumentLockHook(() -> {
+            // Fire only for T1: T2 reaches this point after T1 commits and must not wait.
+            if (!armed.compareAndSet(true, false)) {
+                return;
+            }
+            lockHeld.countDown();
+            try {
+                if (!secondEntered.await(20, TimeUnit.SECONDS)
+                        || !releaseFirst.await(20, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("Concurrent redelivery did not overlap");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(interrupted);
+            }
+        });
+
         ExecutorService pool = Executors.newFixedThreadPool(2);
-        CyclicBarrier barrier = new CyclicBarrier(2);
         try {
-            List<Future<DocumentRevision>> futures = new ArrayList<>();
-            for (int index = 0; index < 2; index++) {
-                futures.add(pool.submit(() -> {
-                    // Both workers wait here; neither runs receive() until both arrived.
-                    barrier.await(30, TimeUnit.SECONDS);
-                    return revisions.receive(document);
-                }));
-            }
+            Future<DocumentRevision> first = pool.submit(() -> revisions.receive(document));
+            assertThat(lockHeld.await(20, TimeUnit.SECONDS)).isTrue();
+            // T2 enters receive() while T1 still holds the row lock inside its transaction.
+            Future<DocumentRevision> second = pool.submit(() -> {
+                secondEntered.countDown();
+                return revisions.receive(document);
+            });
+            assertThat(secondEntered.await(20, TimeUnit.SECONDS)).isTrue();
+            releaseFirst.countDown();
+
             List<DocumentRevision> results = new ArrayList<>();
-            for (Future<DocumentRevision> future : futures) {
-                results.add(future.get(30, TimeUnit.SECONDS));
-            }
+            results.add(first.get(30, TimeUnit.SECONDS));
+            results.add(second.get(30, TimeUnit.SECONDS));
             // Both callers must be handed the SAME revision at the SAME local order.
             assertThat(results.get(0).docRevisionId())
                     .isEqualTo(results.get(1).docRevisionId());

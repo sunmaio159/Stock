@@ -28,8 +28,12 @@ public class SourcePolicy {
         this.clock = clock == null ? Clock.systemUTC() : clock;
     }
 
-    /** Test seam: overrides the clock used for validity-window checks. Production never calls it. */
-    public void setClock(Clock clock) {
+    /**
+     * Test seam: overrides the clock used for validity-window checks. Package-private so
+     * production code cannot reach it; tests in this package must restore UTC in cleanup
+     * (a leaked fixed clock would silently affect unrelated cases sharing the context).
+     */
+    void setClock(Clock clock) {
         this.clock = clock == null ? Clock.systemUTC() : clock;
     }
 
@@ -56,9 +60,8 @@ public class SourcePolicy {
                             resultSet.getBoolean("perm_analyze"),
                             resultSet.getBoolean("perm_display"),
                             resultSet.getBoolean("perm_export"),
-                            resultSet.getTimestamp("valid_from").toInstant(),
-                            resultSet.getTimestamp("valid_to") == null
-                                    ? null : resultSet.getTimestamp("valid_to").toInstant(),
+                            SourceValidityWindow.readUtc(resultSet, "valid_from"),
+                            SourceValidityWindow.readUtc(resultSet, "valid_to"),
                             resultSet.getInt("permission_version"),
                             resultSet.getInt("license_version"),
                             resultSet.getString("adapter_contract_version")),
@@ -69,9 +72,8 @@ public class SourcePolicy {
         if (!"ACTIVE".equals(row.status())) {
             throw new ApiException(HttpStatus.FORBIDDEN, "Source permission is " + row.status());
         }
-        Instant now = clock.instant();
-        if (now.isBefore(row.validFrom())
-                || (row.validTo() != null && !now.isBefore(row.validTo()))) {
+        if (!SourceValidityWindow.contains(
+                clock.instant(), row.validFrom(), row.validTo())) {
             throw new ApiException(HttpStatus.FORBIDDEN, "Source permission is outside its validity window");
         }
         // The unified design §8.1: each capability is granted separately, so an ACTIVE source that

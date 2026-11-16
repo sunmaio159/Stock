@@ -92,7 +92,7 @@ class SentimentLifecycleIntegrationTest {
     void expiredValidityWindowBeforeCommitBlocksTheSentimentResult() {
         Fixture fixture = prepare();
         analysis.setBeforeCommitHook(() -> updateOnSeparateConnection("""
-                UPDATE m3_source_config SET valid_to = NOW(6) - INTERVAL 1 SECOND
+                UPDATE m3_source_config SET valid_to = UTC_TIMESTAMP(6) - INTERVAL 1 SECOND
                 WHERE source_code = ?
                 """, GovernanceFixture.SOURCE_CODE));
 
@@ -102,12 +102,18 @@ class SentimentLifecycleIntegrationTest {
         assertThat(resultCount()).isZero();
     }
 
+    /**
+     * Review 2026-11-16 false-positive-4: a pre-test out-of-band UPDATE proves the guard
+     * exists but not that it reads CURRENT at commit time. This case now tampers over a
+     * separate connection inside the analysis transaction, so the guard's FOR UPDATE must
+     * see the uncommitted-outside change through the locking read.
+     */
     @Test
     void tamperedRevisionContentBlocksTheSentimentResult() {
         Fixture fixture = prepare();
-        jdbc.update("""
+        analysis.setBeforeCommitHook(() -> updateOnSeparateConnection("""
                 UPDATE m4_doc_revision SET body_hash = 'tampered' WHERE doc_revision_id = ?
-                """, fixture.revisionId);
+                """, fixture.revisionId));
 
         assertThatThrownBy(() ->
                 analysis.persistResult(ENGINE_LEVEL, fixture.result, fixture.lifecycleVersion))
@@ -119,9 +125,9 @@ class SentimentLifecycleIntegrationTest {
     @Test
     void supersededRevisionCannotProduceASentimentResult() {
         Fixture fixture = prepare();
-        jdbc.update("""
+        analysis.setBeforeCommitHook(() -> updateOnSeparateConnection("""
                 UPDATE m4_doc_revision SET status = 'SUPERSEDED' WHERE doc_revision_id = ?
-                """, fixture.revisionId);
+                """, fixture.revisionId));
 
         assertThatThrownBy(() ->
                 analysis.persistResult(ENGINE_LEVEL, fixture.result, fixture.lifecycleVersion))

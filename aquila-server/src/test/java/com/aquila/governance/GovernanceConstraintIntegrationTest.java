@@ -321,6 +321,11 @@ class GovernanceConstraintIntegrationTest {
      * not merely zero revisions and zero jobs. m4_normalized_doc = 0 in particular catches
      * a doc shell surviving in an inner transaction while the policy refuses later.
      * m3_raw_record is the test's own input and is deliberately not asserted here.
+     *
+     * <p>Review 2026-11-16 Minor-7: the two callers are refused by the entry gate BEFORE any
+     * transaction opens, so this asserts the gate's atomicity — it does not cover the
+     * in-transaction capability re-check (lines 63-64 of RevisionService). The job count is
+     * now unfiltered: this fixture starts at zero jobs, so any row at all is a write leak.
      */
     private void assertNoGovernanceWrites() {
         assertThat(count("SELECT COUNT(*) FROM m4_normalized_doc")).isZero();
@@ -328,9 +333,7 @@ class GovernanceConstraintIntegrationTest {
         assertThat(count("SELECT COUNT(*) FROM m4_doc_quality")).isZero();
         assertThat(count("SELECT COUNT(*) FROM m4_entity_mention")).isZero();
         assertThat(count("SELECT COUNT(*) FROM m4_recompute_marker")).isZero();
-        assertThat(count(
-                "SELECT COUNT(*) FROM m3_processing_job WHERE doc_revision_id IS NOT NULL"))
-                .isZero();
+        assertThat(count("SELECT COUNT(*) FROM m3_processing_job")).isZero();
     }
 
     private int count(String sql) {

@@ -228,6 +228,19 @@ class SentimentSchemaIntegrationTest {
      */
     @Test
     void versionIdsDifferingOnlyByCaseAreDistinctIdentities() {
+        // Assert the column contract directly: if the test schema already defaulted to a
+        // binary collation the coexistence checks below would pass even with V6 removed.
+        assertThat(jdbc.queryForObject("""
+                SELECT COLLATION_NAME FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'm5_dict_version'
+                  AND COLUMN_NAME = 'dict_version'
+                """, String.class)).isEqualTo("utf8mb4_bin");
+        assertThat(jdbc.queryForObject("""
+                SELECT COLLATION_NAME FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'm5_sentiment_window'
+                  AND COLUMN_NAME = 'analysis_version'
+                """, String.class)).isEqualTo("utf8mb4_bin");
+
         SentimentFixture.insertDictVersion(jdbc, "dict-case", "hash-case-lower");
         SentimentFixture.insertDictVersion(jdbc, "DICT-CASE", "hash-case-upper");
         assertThat(jdbc.queryForObject("""
@@ -264,6 +277,22 @@ class SentimentSchemaIntegrationTest {
                 SELECT score FROM m5_sentiment_window WHERE eligible_sample_count = 1
                 """, BigDecimal.class))
                 .isEqualByComparingTo("0.00");
+    }
+
+    /**
+     * V7 review fix (2026-11-16 M-1): the I-5 guard is one-way. With exponential decay a
+     * very small half-life can underflow every weight to zero, leaving eligible mentions but
+     * no directional score — that legal shape must be storable as NULL, not rejected by a
+     * bidirectional CHECK. The forbidden shape (zero eligible + a score) is still refused
+     * by the test above.
+     */
+    @Test
+    void aWindowWithEligibleSamplesMayKeepItsScoreNullAfterWeightUnderflow() {
+        insertWindow(null, 1, 1, 0);
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM m5_sentiment_window
+                WHERE eligible_sample_count = 1 AND score IS NULL
+                """, Integer.class)).isEqualTo(1);
     }
 
     private void insertResult(

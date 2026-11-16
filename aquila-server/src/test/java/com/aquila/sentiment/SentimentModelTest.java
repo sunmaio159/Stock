@@ -94,16 +94,16 @@ class SentimentModelTest {
 
     @Test
     void decayPolicyMustBeSelfConsistent() {
-        assertThatThrownBy(() -> new DecayPolicy(DecayPolicy.DecayType.NONE, 900L))
+        assertThatThrownBy(() -> new DecayPolicy(DecayPolicy.DecayType.NONE, 900L, 12))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("half-life");
-        assertThatThrownBy(() -> new DecayPolicy(DecayPolicy.DecayType.EXPONENTIAL_HALF_LIFE, null))
+        assertThatThrownBy(() -> new DecayPolicy(DecayPolicy.DecayType.EXPONENTIAL_HALF_LIFE, null, 12))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("half-life");
-        assertThatThrownBy(() -> new DecayPolicy(DecayPolicy.DecayType.EXPONENTIAL_HALF_LIFE, 0L))
+        assertThatThrownBy(() -> new DecayPolicy(DecayPolicy.DecayType.EXPONENTIAL_HALF_LIFE, 0L, 12))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("half-life");
-        assertThatThrownBy(() -> new DecayPolicy(null, null))
+        assertThatThrownBy(() -> new DecayPolicy(null, null, 12))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 

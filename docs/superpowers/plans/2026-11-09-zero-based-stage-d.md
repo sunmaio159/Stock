@@ -118,7 +118,7 @@ Expected: PASS on MySQL 8. Run full backend tests, frontend tests/build, and Ope
 - Create: `aquila-server/src/main/java/com/aquila/sentiment/BackfillWorker.java`
 - Create: `aquila-server/src/main/java/com/aquila/workbench/WorkbenchController.java`
 - Create: `aquila-server/src/main/java/com/aquila/workbench/WorkbenchService.java`
-- Create: `aquila-server/src/main/resources/db/migration/V7__analysis_publication.sql` (renumbered 2026-11-15: the applied sequence advanced to V6 with `V6__sentiment_identity_hardening.sql`, the Stage D review fix migration; physical numbering follows the applied sequence, decision D3 pattern)
+- Create: `aquila-server/src/main/resources/db/migration/V8__analysis_publication.sql` (renumbered twice, 2026-11-15/16: the applied sequence advanced to V6 with `V6__sentiment_identity_hardening.sql`, then V7 with `V7__sentiment_window_check_hardening.sql`, both Stage D review-fix migrations; physical numbering follows the applied sequence, decision D3 pattern)
 - Create: `aquila-server/src/test/java/com/aquila/sentiment/AnalysisPublicationIntegrationTest.java`
 - Create: `aquila-web/src/views/WorkbenchView.vue`
 - Create: `aquila-web/src/views/SecurityDetailView.vue`
@@ -137,7 +137,7 @@ Continuously insert/revise/delete input while candidate backfill runs; simulate 
 
 Record VER-01 maximum duration, queue limit, backpressure, and evidence thresholds from MySQL 8 pressure runs before enabling publication.
 
-- [ ] **Step 3: Add V7 change-log and publication schema**
+- [ ] **Step 3: Add V8 change-log and publication schema**
 
 Add commit-ordered change-log head, version lifecycle/checkpoints, backfill/catch-up watermarks, validation results, active pointer, bounded barrier, and publication audit.
 

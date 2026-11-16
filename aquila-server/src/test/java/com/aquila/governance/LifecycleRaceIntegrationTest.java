@@ -144,7 +144,7 @@ class LifecycleRaceIntegrationTest {
         assertThat(lease).isNotNull();
 
         worker.setBeforeCommitHook(() -> updateOnSeparateConnection("""
-                UPDATE m3_source_config SET valid_to = NOW(6) - INTERVAL 1 SECOND
+                UPDATE m3_source_config SET valid_to = UTC_TIMESTAMP(6) - INTERVAL 1 SECOND
                 WHERE source_code = ?
                 """, GovernanceFixture.SOURCE_CODE));
 
@@ -167,7 +167,7 @@ class LifecycleRaceIntegrationTest {
 
         worker.setBeforeCommitHook(() -> updateOnSeparateConnection("""
                 UPDATE m3_source_config
-                SET valid_from = NOW(6) + INTERVAL 1 DAY
+                SET valid_from = UTC_TIMESTAMP(6) + INTERVAL 1 DAY
                 WHERE source_code = ?
                 """, GovernanceFixture.SOURCE_CODE));
 

@@ -32,11 +32,23 @@ public class RevisionService {
     private final TransactionTemplate transactions;
     private final SourcePolicy policy;
 
+    /**
+     * Test seam (Stage C round-4 Minor-4): a hook invoked immediately after the document
+     * row lock is taken inside receive(). It lets a test hold the first transaction at the
+     * lock point until a second transaction has actually started, so the concurrent-ordering
+     * IT cannot degrade into a sequential replay. Production never sets it.
+     */
+    private volatile Runnable afterDocumentLockHook;
+
     public RevisionService(
             JdbcTemplate jdbc, TransactionTemplate transactions, SourcePolicy policy) {
         this.jdbc = jdbc;
         this.transactions = transactions;
         this.policy = policy;
+    }
+
+    void setAfterDocumentLockHook(Runnable hook) {
+        this.afterDocumentLockHook = hook;
     }
 
     public DocumentRevision receive(ObservedDocument observed) {
@@ -56,6 +68,13 @@ public class RevisionService {
             // blocks in upsertDocument until this one commits, so the ReadView created by
             // the re-check below is fresh.
             String docId = upsertDocument(observed);
+
+            // Test seam: with the doc row lock held, let a test prove a second transaction
+            // is already waiting before this one commits (no-op in production).
+            Runnable hook = afterDocumentLockHook;
+            if (hook != null) {
+                hook.run();
+            }
 
             // Re-check the capabilities this write consumes, at the point of use, after
             // the doc row lock is held; the commit barrier re-checks them once more before
