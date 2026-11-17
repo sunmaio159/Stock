@@ -1542,3 +1542,38 @@ and the eight parameters themselves are still unsigned. Freeze sheet:
   coefficients/tiers now have mechanisms ready to receive them), deferred
   `DictionaryView.vue`/OpenAPI, dictionary snapshot publication service, Task 2 window
   evidence-state state machine, and the four owner/parameter/load-dependent Stage C items.
+
+## PO parameter sign-off — owner decision D5 (2026-11-17)
+
+Owner signed the Stage D Step 1 口径 (recommendation sheet `po-signoff-proposal.md`, values
+back-filled into the git-ignored `po-parameter-freeze-sheet.md` and `po-signoff-checklist.md`).
+This is an **口径 sign-off, not Step 1 acceptance**: the PO explicitly chose a non-production
+SMOKE placeholder dictionary, so no real labelled evaluation set exists and Step 1 stays `[ ]`.
+
+- **Signed口径:** #1 smoke placeholder vocabulary (`gain=40`/`decline=-40`, `not`, `sharply=1.5`,
+  contrast marker) with `calibrated=false`; #2 `HITS_OVER_FULL_HITS` retained, both `calibrated=false`;
+  #3 `minConfidence=0.30`, `fullConfidenceHits=2`, no effective-neutral (unknown stays NULL);
+  #4 ruling = **as-built** (boolean negation / first-marker split / no label threshold),
+  `titleWeight=0.6`/`bodyWeight=0.4`, contrast ON with `preContrastWeight=0.5`;
+  #5 `excludeOppositeStanceMultiSecurity=true`; #6 **staged** — `UNIFORM` + `NONE` this round
+  (differentiated weights stay implemented-but-disabled until the signal chain and coefficients
+  are frozen); #7 deferred to Task 2, #8 stays OPEN (owner-confirmed).
+- **Delivered:** `com.aquila.sentiment.DictionarySnapshotPublisher` closes the brief §7.3
+  "词典快照发布服务" gap. Parameter-free: all content arrives in the caller's
+  `DictionarySnapshot`. Invariants in one transaction — content-addressed SHA-256 digest
+  (version name deliberately excluded), immutable per version (identical replay = no-op,
+  same version + different content = 409), same content under another version refused via the
+  unique key, `calibration_state` derived only from `calibrated`. New
+  `DictionaryPublicationIntegrationTest` (6 cases, real MySQL 8.4) locks those invariants;
+  the SMOKE snapshot is published into the TEST schema only — never production, never online.
+- **Falsification:** version folded back into the content hash → 2 red (alias-publish and
+  order/scale independence); immutability guard removed → 1 red (409 semantics no longer held).
+  Source byte-restored, no `PROBE:` residue.
+- **Verification:** focused 48/48; new publication IT 6/6; full backend `-Pmysql-it` excluding
+  `FlywayMySqlIntegrationTest` **274/274**, new IT `Skipped: 0` (real execution confirmed);
+  frontend typecheck / OpenAPI lint / vitest 5/5 / build all green.
+- **Still open (honest):** Step 1 remains unchecked because the real 500-item labelled set and
+  ≥75% evaluation are not met (SMOKE placeholder only); no production version rows written, no
+  online publication enabled, no precision/recall/F1 claimed. `DictionaryView.vue`/OpenAPI stay
+  deferred; Task 2 evidence-state state machine and the four owner/parameter/load Stage C items
+  remain OPEN.
